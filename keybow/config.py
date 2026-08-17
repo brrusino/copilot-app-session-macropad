@@ -50,6 +50,15 @@ ACTION_KEYS = {
 # Defaults to the two leftmost bottom keys so it falls under a thumb.
 DICTATION_KEYS = (ROWS[3][0], ROWS[3][1])
 
+# The modifier chord the dictation keys hold down, as adafruit_hid Keycode
+# NAMES (resolved at runtime so this file stays plain data).
+#
+# Default is Wispr Flow's push-to-talk on Windows: Ctrl+Win held down.
+# On macOS the same physical chord reports as Ctrl+Cmd, so LEFT_GUI is still
+# correct there -- but if your dictation tool uses a different shortcut, change
+# it here rather than in code.py.
+DICTATION_CHORD = ("LEFT_CONTROL", "LEFT_GUI")
+
 # Remaining bottom-row keys are unassigned; presses are still reported to the
 # host so they can be bound later without a reflash.
 FREE_KEYS = (ROWS[3][2], ROWS[3][3])

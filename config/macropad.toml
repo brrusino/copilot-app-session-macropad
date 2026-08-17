@@ -10,11 +10,12 @@
 [pad]
 # How the daemon reaches the pad.
 #
-#   "serial"  - pad is plugged into this machine (default)
-#   "network" - pad is on a DIFFERENT machine and relayed here by
-#               scripts/pad_bridge.py. This is what you want over RDP, where
-#               the Copilot app runs on the remote host but the pad enumerates
-#               on the local client.
+#   "serial"  - the pad's serial port is visible to this machine. That includes
+#               a directly-plugged pad, and a pad on an RDP client whose COM
+#               port is redirected into the session (nothing to install).
+#   "network" - the pad is on another machine that relays here via
+#               scripts/pad_bridge.py. That machine needs Python + pyserial,
+#               so this is only an option if you can install software there.
 transport = "serial"
 
 # Only used when transport = "network".

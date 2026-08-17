@@ -74,34 +74,97 @@ it — two hooks both answering is undefined behaviour. We watch it purely to tu
 a LED amber, and every generated hook command discards stdout and exits 0, so a
 dead daemon can never fail an agent turn.
 
+## Which machine does what
+
+This can span up to three machines, so it's worth being explicit:
+
+| Machine | Role |
+|---|---|
+| **Where the Copilot app runs** | The daemon and the hooks. Must be here — it's where `data.db` and the sessions live. |
+| **Where the pad is plugged in** | The machine you type on. Dictation types here, natively, with nothing installed. |
+| **A machine you can install on** | Bootstrap only — flashing CircuitPython and copying libraries onto the pad. Used once, then irrelevant; it doesn't have to be either of the above. |
+
+If all of these are the same machine, ignore this section — the default
+`transport = "serial"` just works.
+
+### Getting the daemon and the pad connected
+
+**Dictation goes wherever the pad is plugged in.** It's raw USB HID, so the pad
+types Ctrl+Win into whatever machine it's physically connected to, with no
+software on that machine at all. That means the pad belongs on the machine you
+actually type on — which is settled, and isn't the trade-off.
+
+The open question is only how the daemon reaches it, since the daemon has to
+live with the Copilot app. Two ways:
+
+**Option 1: RDP COM port redirection.** Redirects the pad's serial port into
+the session so the daemon can talk to it. Nothing to install anywhere — it's a
+checkbox in the RDP client (*Local Resources → More → Ports*). If the port
+appears in the session, keep the default `transport = "serial"` and you're done.
+
+This is the only option that needs no software on the machine holding the pad,
+so **if that machine is locked down, this is the one that has to work.**
+USB-CDC redirection isn't always reliable and may simply not show up; it costs
+a minute to find out.
+
+To check whether it worked, on the daemon machine run:
+
+```powershell
+python -m macropad_daemon --ports
+```
+
+That lists every serial port visible in the session, flags any with a
+CircuitPython vendor id, and probes each one for the pad. It tells you plainly
+whether the port made it through.
+
+**Option 2: the network bridge.** A small relay runs on the machine holding the
+pad and forwards to the daemon over TCP. Fully functional, but it needs Python
+and `pyserial` **on that machine** — so it's only viable if you can install
+there. Use it when the pad's host is a machine you control, not a locked-down
+one.
+
+If neither works, dictation still functions on its own — see
+[If the daemon can't reach the pad](#if-the-daemon-cant-reach-the-pad).
+
 ## Setup
 
-### 1. Firmware
+### 1. Bootstrap the pad
+
+Do this on any machine you can install software on — it doesn't have to be the
+machine that ends up hosting the pad day to day.
 
 Put CircuitPython on the pad if it isn't already: hold **BOOT** while plugging
-it in, then drop the
+it in, then copy the
 [Keybow 2040 CircuitPython `.uf2`](https://circuitpython.org/board/pimoroni_keybow2040/)
-onto the `RPI-RP2` drive that appears.
+onto the `RPI-RP2` volume that appears. It reboots as `CIRCUITPY`.
 
-Install the two libraries the firmware needs into `CIRCUITPY\lib\`, from the
+Install the two libraries the firmware needs, from the
 [PMK library](https://github.com/pimoroni/pmk-circuitpython) and the
 [Adafruit CircuitPython bundle](https://circuitpython.org/libraries):
 
 ```
-CIRCUITPY\lib\pmk\
-CIRCUITPY\lib\adafruit_hid\
+<CIRCUITPY>/lib/pmk/
+<CIRCUITPY>/lib/adafruit_hid/
 ```
 
 Then copy the firmware across:
 
+```bash
+./scripts/flash-firmware.sh          # macOS / Linux
+```
 ```powershell
-.\scripts\flash-firmware.ps1
+.\scripts\flash-firmware.ps1         # Windows
 ```
 
 **Unplug and replug the pad afterwards.** `boot.py` enables the USB serial data
 port, and that only takes effect on a hard reset — a soft reload won't do it.
 
+Once flashed, the pad is self-contained: dictation works on any machine you
+plug it into, with no software on that machine at all.
+
 ### 2. Daemon
+
+On the machine running the Copilot app:
 
 ```powershell
 cd daemon
@@ -135,18 +198,10 @@ cd daemon
 .\.venv\Scripts\python.exe -m macropad_daemon
 ```
 
-## Running over RDP (pad and app on different machines)
+## Using the network bridge
 
-The daemon has to run where the Copilot app's state lives. If you work over RDP,
-that's the remote host — but the pad enumerates on the local client you're
-sitting at. RDP can redirect COM ports, but redirection of USB-CDC composite
-devices is unreliable, so there's a bridge for this.
-
-The dictation key needs none of it. The chord is pure firmware HID, so the pad
-types Ctrl+Win into the local machine and Wispr Flow picks it up there,
-regardless of what the daemon is doing.
-
-For the LEDs and session keys, on the **daemon machine** set:
+Only needed if you picked Option 2 — that is, if the machine holding the pad is
+one you can install Python on. On the **daemon machine**:
 
 ```toml
 [pad]
@@ -159,16 +214,48 @@ Start the daemon once; it writes a shared token to `~/.copilot/macropad.token`.
 Then on the **machine with the pad**, copy `scripts/pad_bridge.py` across and
 run it:
 
-```powershell
+```bash
 pip install pyserial
 python pad_bridge.py --host <daemon-host> --token <token-from-that-file>
 ```
 
-The bridge depends on nothing but `pyserial`, so the client machine doesn't need
-the rest of this project. It connects outbound to the daemon, which is the same
-direction RDP already travels, so it needs no inbound firewall change on the
-client. Both sides reconnect on their own if the pad is replugged or the link
-drops.
+The bridge depends on nothing but `pyserial`, so that machine doesn't need the
+rest of this project — a clone or a single copied file is enough. It connects
+outbound to the daemon, so it needs no inbound firewall change on its own side.
+Both ends reconnect by themselves if the pad is replugged or the link drops.
+
+## If the daemon can't reach the pad
+
+If COM redirection doesn't materialise and you can't install on the machine
+holding the pad, the pad isn't useless — it degrades to a known state rather
+than failing.
+
+**Still works, with nothing installed:**
+
+- **Dictation.** The chord is pure firmware HID. This is the key you press most,
+  and it needs no daemon, no serial port and no bridge.
+- **The pad's own lighting.** Session keys sit on a dim "disconnected" colour so
+  you can see at a glance that state isn't live, rather than being shown stale
+  colours you might trust.
+
+**Doesn't work:** LED session state, and pressing a key to focus a session —
+both need a channel to the daemon.
+
+**Still worth doing on the daemon side:** installing the hooks and running
+`python -m macropad_daemon --status` gives you the same information the LEDs
+would have shown, printed. It also means the moment a transport does appear,
+everything else is already in place.
+
+Two further options if you want to keep pushing:
+
+- **A USB extension to a machine you control.** If the pad can reach a machine
+  you can run Python on that's still within arm's reach, Option 2 applies —
+  but check dictation still lands where you want it first.
+- **HID output reports instead of serial.** The pad already enumerates as a USB
+  keyboard, and that channel carries host→device data (it's how keyboard lock
+  LEDs work). Routing state over it would need no serial port and no software on
+  the pad's machine. Not implemented here — it's real firmware work — but it's
+  the path that sidesteps the constraint entirely.
 
 ## Which session is on which key
 
@@ -180,11 +267,14 @@ pins are skipped rather than occupying a dead slot.
 
 The two bottom-left keys drive one **Ctrl+Win** push-to-talk chord for Wispr
 Flow. It's handled entirely in firmware as a real USB HID chord, so there's no
-host round trip and it keeps working when the daemon isn't running.
+host round trip, it needs no software on the machine it types into, and it keeps
+working when the daemon isn't running at all.
 
 The two keys share a hold refcount: the chord engages when the first goes down
 and releases only when the last comes up, so rolling off one key mid-sentence
 won't cut you off.
+
+The chord itself is configurable — see `DICTATION_CHORD` in `keybow/config.py`.
 
 ## Customising
 
@@ -206,12 +296,20 @@ layout: switch 0 bottom-left, numbering upwards through each column. If your
 unit disagrees, install the calibration firmware, press keys, and read the
 numbers off the REPL:
 
+```bash
+./scripts/flash-firmware.sh --calibrate    # macOS / Linux
+screen /dev/tty.usbmodem*                  # ctrl-a k to quit
+```
 ```powershell
-.\scripts\flash-firmware.ps1 -Calibrate
+.\scripts\flash-firmware.ps1 -Calibrate    # Windows
 ```
 
-Put the result into `ROWS` and reflash without `-Calibrate`. That table is the
-only place a physical key number appears.
+Put the result into `ROWS` and reflash without the calibrate flag. That table is
+the only place a physical key number appears.
+
+**The dictation chord.** Defaults to Ctrl+Win for Wispr Flow on Windows. If your
+dictation tool uses something else, change `DICTATION_CHORD` in
+`keybow/config.py` — it's Adafruit HID keycode names, so no code change needed.
 
 **Row 3 keystrokes.** `approve`, `interrupt` and `new_session` send keystrokes
 to the app after focusing the target session. The defaults in
@@ -241,13 +339,16 @@ enables `SO_REUSEADDR` by default, which on Windows would otherwise let the
 duplicate bind successfully while the stale instance silently kept receiving
 every request.)
 
-**Pad not detected.** In `serial` mode the daemon only probes ports whose USB
-vendor id looks like a CircuitPython board, falling back to every port when none
-match. Confirm the pad enumerates as a serial device, and that you replugged it
-after the first firmware install so `boot.py` could enable the data port. Pin
-the port with `[serial] port` if discovery keeps picking wrong. If the pad is on
-a different machine from the daemon, you want `transport = "network"` and the
-bridge — see above.
+**Pad not detected.** Run `python -m macropad_daemon --ports` — it lists every
+visible serial port and probes each for the pad, which is the quickest way to
+tell a redirection problem from a firmware one. In `serial` mode the daemon only
+probes ports whose USB vendor id looks like a CircuitPython board, falling back
+to every port when none match. Confirm you replugged the pad after the first
+firmware install so `boot.py` could enable the data port. Pin the port with
+`[serial] port` if discovery keeps picking wrong.
+
+Over RDP, "no ports visible" usually means COM redirection isn't forwarding the
+port — see [Getting the daemon and the pad connected](#getting-the-daemon-and-the-pad-connected).
 
 **Bridge won't connect.** Check the token matches `~/.copilot/macropad.token` on
 the daemon machine, that `bridge_host` isn't `127.0.0.1` (that only accepts
@@ -296,3 +397,7 @@ Still needs the pad in hand — see [Calibration](#calibration):
 - Physical key numbering.
 - Whether the two dictation keys land where you want them.
 - The row 3 `approve` / `interrupt` / `new_session` keystrokes.
+
+Unresolved: whether the daemon can reach a pad plugged into a locked-down
+machine. See [Getting the daemon and the pad connected](#getting-the-daemon-and-the-pad-connected)
+and [If the daemon can't reach the pad](#if-the-daemon-cant-reach-the-pad).

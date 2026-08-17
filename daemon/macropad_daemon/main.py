@@ -11,6 +11,7 @@ Wires the four moving parts together:
 Useful without hardware::
 
     python -m macropad_daemon --status         # resolve slots and print them
+    python -m macropad_daemon --ports          # is the pad's serial port visible?
     python -m macropad_daemon --print-hooks    # show the hook config
 """
 
@@ -251,10 +252,62 @@ def _print_status(cfg: config_module.Config) -> int:
     return 0
 
 
+def _print_ports() -> int:
+    """List serial ports and say which could be the pad.
+
+    Mainly for confirming whether RDP COM redirection is actually forwarding
+    the pad into this session, which is otherwise guesswork.
+    """
+    try:
+        from serial.tools import list_ports
+
+        from .serial_link import CIRCUITPYTHON_VIDS, candidate_ports, probe
+    except ImportError:
+        print("pyserial is not installed:  pip install pyserial", file=sys.stderr)
+        return 2
+
+    ports = list(list_ports.comports())
+    if not ports:
+        print("No serial ports visible at all.")
+        print()
+        print("If the pad is plugged into an RDP client, enable COM port")
+        print("redirection in the client (Local Resources -> More -> Ports),")
+        print("then reconnect the session.")
+        return 1
+
+    print(f"{len(ports)} serial port(s) visible:")
+    for info in ports:
+        vid = f"{info.vid:04X}" if info.vid else "----"
+        known = " <- CircuitPython vendor id" if info.vid in CIRCUITPYTHON_VIDS else ""
+        print(f"  {info.device:<10} VID:{vid}  {info.description or ''}{known}")
+
+    print()
+    print("Probing for the pad (each candidate gets a few seconds)...")
+    for port in candidate_ports():
+        if probe(port, 115200):
+            print(f"  FOUND: {port} speaks the macropad protocol")
+            print()
+            print(f'Set [serial] port = "{port}" to skip discovery, or leave it')
+            print("unset and the daemon will find it the same way.")
+            return 0
+        print(f"  {port}: no response")
+
+    print()
+    print("No port answered. If the pad is plugged in and flashed, check that")
+    print("you replugged it after the first install so boot.py could enable")
+    print("the USB serial data port.")
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="macropad_daemon", description=__doc__)
     parser.add_argument("--config", help="path to macropad.toml")
     parser.add_argument("--status", action="store_true", help="print resolved slots and exit")
+    parser.add_argument(
+        "--ports",
+        action="store_true",
+        help="list serial ports and probe for the pad (checks COM redirection)",
+    )
     parser.add_argument("--print-hooks", action="store_true", help="print hook config JSON")
     parser.add_argument("--install-hooks", action="store_true", help="write the hook config")
     parser.add_argument("--verbose", "-v", action="store_true")
@@ -280,6 +333,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.status:
         return _print_status(cfg)
+
+    if args.ports:
+        return _print_ports()
 
     return Daemon(cfg).run()
 

@@ -73,6 +73,8 @@ def _install_stubs(monkeypatch):
     class Keycode:
         LEFT_CONTROL = "LEFT_CONTROL"
         LEFT_GUI = "LEFT_GUI"
+        LEFT_ALT = "LEFT_ALT"
+        LEFT_SHIFT = "LEFT_SHIFT"
 
     keycode_mod.Keycode = Keycode
     monkeypatch.setitem(sys.modules, "adafruit_hid", hid_pkg)
@@ -220,6 +222,27 @@ def test_release_chord_is_idempotent(firmware):
     firmware._release_chord()
     firmware._release_chord()
     assert firmware._chord_active is False
+
+
+def test_chord_comes_from_config(firmware):
+    """The chord is data, not hardcoded, so it can follow the dictation tool."""
+    import config as fw_config
+
+    assert fw_config.DICTATION_CHORD == ("LEFT_CONTROL", "LEFT_GUI")
+    assert firmware._CHORD == ("LEFT_CONTROL", "LEFT_GUI")
+
+
+def test_chord_resolution_drops_unknown_keycodes(firmware):
+    """A typo in config must not brick every other key on the pad."""
+    resolved = firmware._resolve_chord(("LEFT_CONTROL", "NOT_A_REAL_KEY", "LEFT_ALT"))
+    assert resolved == ("LEFT_CONTROL", "LEFT_ALT")
+
+
+def test_empty_chord_does_not_press_anything(firmware, monkeypatch):
+    monkeypatch.setattr(firmware, "_CHORD", ())
+    firmware._press_chord()
+    assert firmware._chord_active is False
+    assert firmware._test_keyboard.held == set()
 
 
 # --- LED resolution -------------------------------------------------------

@@ -46,6 +46,22 @@ keys = keybow.keys
 
 _keyboard = Keyboard(usb_hid.devices)
 
+# Resolve the configured chord names to real Keycode values once at startup.
+# An unknown name is dropped with a REPL warning rather than crashing the
+# firmware and taking every other key down with it.
+def _resolve_chord(names):
+    resolved = []
+    for name in names:
+        keycode = getattr(Keycode, name, None)
+        if keycode is None:
+            print("config: unknown DICTATION_CHORD keycode %r, ignoring" % (name,))
+            continue
+        resolved.append(keycode)
+    return tuple(resolved)
+
+
+_CHORD = _resolve_chord(getattr(config, "DICTATION_CHORD", ("LEFT_CONTROL", "LEFT_GUI")))
+
 # --- serial ---------------------------------------------------------------
 
 _serial = usb_cdc.data
@@ -130,10 +146,10 @@ def _host_connected(now):
 
 def _press_chord():
     global _chord_active
-    if _chord_active:
+    if _chord_active or not _CHORD:
         return
     try:
-        _keyboard.press(Keycode.LEFT_CONTROL, Keycode.LEFT_GUI)
+        _keyboard.press(*_CHORD)
         _chord_active = True
     except Exception:
         pass
@@ -144,7 +160,7 @@ def _release_chord():
     if not _chord_active:
         return
     try:
-        _keyboard.release(Keycode.LEFT_CONTROL, Keycode.LEFT_GUI)
+        _keyboard.release(*_CHORD)
     except Exception:
         pass
     finally:
