@@ -231,37 +231,39 @@ be stale. Dictation is unaffected. If you want the LEDs, you need Option 1 or 2.
 
 ### 1. Bootstrap the pad
 
-Do this on any machine you can install software on — it doesn't have to be the
-machine that ends up hosting the pad day to day.
+Do this on any machine you can install software on — a Mac is fine. It doesn't
+have to be the machine that ends up hosting the pad day to day; once flashed,
+the pad is self-contained.
 
-Put CircuitPython on the pad if it isn't already: hold **BOOT** while plugging
-it in, then copy the
+**Put CircuitPython on the pad** if it isn't already. Hold **BOOT** while
+plugging it in, then copy the
 [Keybow 2040 CircuitPython `.uf2`](https://circuitpython.org/board/pimoroni_keybow2040/)
-onto the `RPI-RP2` volume that appears. It reboots as `CIRCUITPY`.
+onto the `RPI-RP2` volume that appears. The board reboots as `CIRCUITPY`.
 
-Install the two libraries the firmware needs, from the
-[PMK library](https://github.com/pimoroni/pmk-circuitpython) and the
-[Adafruit CircuitPython bundle](https://circuitpython.org/libraries):
-
-```
-<CIRCUITPY>/lib/pmk/
-<CIRCUITPY>/lib/adafruit_hid/
-```
-
-Then copy the firmware across:
+**Copy the firmware and its libraries:**
 
 ```bash
-./scripts/flash-firmware.sh          # macOS / Linux
-```
-```powershell
-.\scripts\flash-firmware.ps1         # Windows
+git clone https://github.com/brrusino/copilot-app-session-macropad
+cd copilot-app-session-macropad
+./scripts/flash-firmware.sh --fetch-libs
 ```
 
-**Unplug and replug the pad afterwards.** `boot.py` enables the USB serial data
-port, and that only takes effect on a hard reset — a soft reload won't do it.
+`--fetch-libs` downloads the three libraries the firmware needs straight onto
+the pad, so there's nothing to install on the machine you're flashing from:
 
-Once flashed, the pad is self-contained: dictation works on any machine you
-plug it into, with no software on that machine at all.
+| Library | Why |
+|---|---|
+| `pmk` | Pimoroni's driver for the keys and LEDs |
+| `adafruit_hid` | the dictation keystroke chord |
+| `adafruit_is31fl3731` | the LED matrix driver PMK sits on top of |
+
+On Windows use `.\scripts\flash-firmware.ps1` and install those three into
+`CIRCUITPY\lib\` yourself, from the
+[PMK library](https://github.com/pimoroni/pmk-circuitpython) and the
+[Adafruit bundle](https://circuitpython.org/libraries).
+
+**Then unplug and replug the pad.** `boot.py` enables the USB serial data port,
+and that only takes effect on a hard reset — a soft reload won't do it.
 
 ### 2. Daemon
 
@@ -412,13 +414,15 @@ reflashing.
 
 ## Calibration
 
-Two things are worth confirming against your own hardware and app rather than
-trusting the defaults.
+**Physical key numbering is already correct** for a stock Keybow 2040, and this
+is verified rather than assumed: Pimoroni's PMK documentation states keys are
+numbered *"starting from the bottom left corner (when the USB connector is at
+the top), which is key 0, going upwards in columns"*, which is exactly what
+`ROWS` in `keybow/config.py` encodes. **Orient the pad with the USB-C connector
+at the top** and the layout will match.
 
-**Physical key numbering.** `keybow/config.py` assumes the stock Keybow 2040
-layout: switch 0 bottom-left, numbering upwards through each column. If your
-unit disagrees, install the calibration firmware, press keys, and read the
-numbers off the REPL:
+If your unit disagrees, or you want a different orientation, install the
+calibration firmware, press keys, and read the numbers off the REPL:
 
 ```bash
 ./scripts/flash-firmware.sh --calibrate    # macOS / Linux
@@ -431,9 +435,9 @@ screen /dev/tty.usbmodem*                  # ctrl-a k to quit
 Put the result into `ROWS` and reflash without the calibrate flag. That table is
 the only place a physical key number appears.
 
-**The dictation chord.** Defaults to Ctrl+Win for Wispr Flow on Windows. If your
-dictation tool uses something else, change `DICTATION_CHORD` in
-`keybow/config.py` — it's Adafruit HID keycode names, so no code change needed.
+**The dictation chord** defaults to Ctrl+Win for Wispr Flow. If your dictation
+tool uses something else, change `DICTATION_CHORD` in `keybow/config.py` — it
+takes Adafruit HID keycode names, so no code change is needed.
 
 **Row 3 keystrokes.** `approve`, `interrupt` and `new_session` send keystrokes
 to the app after focusing the target session. The defaults in
@@ -518,10 +522,11 @@ Confirmed working against the live app on this machine:
 
 Still needs the pad in hand — see [Calibration](#calibration):
 
-- Physical key numbering.
-- Whether the two dictation keys land where you want them.
+- Whether the two dictation keys land where you want them under your thumb.
 - The row 3 `approve` / `interrupt` / `new_session` keystrokes.
 
-Unresolved: whether the daemon can reach a pad plugged into a locked-down
-machine. See [Getting the daemon and the pad connected](#getting-the-daemon-and-the-pad-connected)
-and [If the daemon can't reach the pad](#if-the-daemon-cant-reach-the-pad).
+Physical key numbering is **no longer** an unknown: it's confirmed against
+Pimoroni's PMK documentation and already correct in `keybow/config.py`.
+
+Unresolved until you try it: whether RDP COM port redirection forwards the pad
+into the session on your specific client. `--ports` answers that in one command.
