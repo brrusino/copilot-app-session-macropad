@@ -1,0 +1,74 @@
+# Copilot macropad daemon configuration.
+#
+# Every value here is optional -- the daemon runs with this file absent.
+# Copy to ~/.copilot/macropad.toml to keep your settings outside the repo,
+# or point $MACROPAD_CONFIG at any path.
+
+# Where the Copilot app keeps its state. Only change this if yours is elsewhere.
+# copilot_home = "C:/Users/you/.copilot"
+
+[pad]
+# How the daemon reaches the pad.
+#
+#   "serial"  - pad is plugged into this machine (default)
+#   "network" - pad is on a DIFFERENT machine and relayed here by
+#               scripts/pad_bridge.py. This is what you want over RDP, where
+#               the Copilot app runs on the remote host but the pad enumerates
+#               on the local client.
+transport = "serial"
+
+# Only used when transport = "network".
+# bridge_host must be an address the bridge machine can reach; "0.0.0.0"
+# listens on every interface.
+bridge_host = "0.0.0.0"
+bridge_port = 7831
+# Shared secret the bridge must present. Generated into
+# ~/.copilot/macropad.token on first run if left unset.
+# bridge_token = "..."
+
+[serial]
+# Only used when transport = "serial". Leave the port unset to auto-detect:
+# CircuitPython exposes two COM ports and which is which is not stable across
+# replugs, so discovery probes for one that actually speaks the protocol.
+# port = "COM7"
+baud = 115200
+
+[hooks]
+# The local HTTP endpoint the Copilot hooks POST to. If you change the port,
+# re-run --install-hooks so the generated hook file matches.
+host = "127.0.0.1"
+port = 7830
+
+[daemon]
+slot_count = 8
+
+# How often to re-read the app database, in seconds. Hooks deliver the fast
+# transitions, so this only has to be quick enough to catch what hooks cannot
+# see -- you reading a session, or re-ordering your pins. Lower is fresher and
+# costs a little more idle CPU.
+reconcile_interval = 1.0
+
+log_level = "INFO"
+
+[leds]
+# Global brightness, 0.0-1.0. Unset means use the firmware default.
+# brightness = 0.6
+
+# Optional colour overrides pushed to the pad at connect, so you can retune
+# without reflashing. Format: state = [[r, g, b], "effect"].
+# Effects: "solid", "breathe", "pulse", "off".
+[leds.palette]
+# idle           = [[90, 90, 90],   "solid"]
+# working        = [[0, 80, 255],   "breathe"]
+# unread         = [[0, 230, 60],   "solid"]
+# needs_approval = [[255, 140, 30], "pulse"]
+# error          = [[255, 20, 20],  "solid"]
+
+[actions]
+# Keystrokes for the row 3 keys, sent after focusing the target session.
+#
+# These are starting points and want confirming against the running app --
+# see "Calibration" in the README. Fix them here, not in code.
+approve = "enter"
+interrupt = "escape"
+new_session = "ctrl+n"
