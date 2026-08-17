@@ -35,6 +35,15 @@
 .PARAMETER TokenFile
     Read the token from a file instead of passing it on the command line.
 
+.PARAMETER Listen
+    Accept an inbound connection from the daemon instead of dialling out.
+
+    Use this when the daemon's machine cannot accept inbound connections -- a
+    Cloud PC or VM behind a gateway, or a host whose firewall you are not an
+    administrator on. Set bridge_mode = "connect" on the daemon side to match.
+
+    In this mode -DaemonHost is not used; the bridge binds locally and waits.
+
 .PARAMETER SerialPort
     Pad COM port, e.g. "COM7". Auto-detected when omitted.
 
@@ -44,6 +53,10 @@
 
 .EXAMPLE
     .\pad-bridge.ps1 -DaemonHost devbox -Token abc123
+
+.EXAMPLE
+    .\pad-bridge.ps1 -Listen -Token abc123
+    Waits for the daemon to dial in. Pair with bridge_mode = "connect".
 
 .EXAMPLE
     .\pad-bridge.ps1 -DaemonHost devbox -Token abc123 -TestConnection
@@ -61,7 +74,6 @@
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
     [string]$DaemonHost,
 
     [int]$Port = 7831,
@@ -72,10 +84,16 @@ param(
 
     [string]$SerialPort,
 
+    [switch]$Listen,
+
     [switch]$TestConnection
 )
 
 $ErrorActionPreference = 'Stop'
+
+if (-not $Listen -and -not $DaemonHost) {
+    throw '-DaemonHost is required unless -Listen is used.'
+}
 
 # USB vendor ids CircuitPython boards present with.
 # 2E8A = Raspberry Pi (RP2040), 239A = Adafruit, 16D0 = MCS/Pimoroni.
@@ -262,6 +280,67 @@ function Test-DaemonLink {
     }
 }
 
+function Wait-ForDaemon {
+    <#
+        Listen mode: accept one inbound connection from the daemon and verify
+        the token it presents. Whichever side dials out sends the token first,
+        so here the daemon authenticates to us.
+
+        Returns a connected TcpClient, or $null if we gave up.
+    #>
+    param([string]$AuthToken)
+
+    $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Any, $Port)
+    try {
+        $listener.Start()
+    }
+    catch {
+        throw "Could not listen on port $Port`: $($_.Exception.Message)"
+    }
+
+    Write-Host "waiting for daemon on port $Port ..." -ForegroundColor Cyan
+    try {
+        while (-not $listener.Pending()) {
+            Start-Sleep -Milliseconds 250
+        }
+        $client = $listener.AcceptTcpClient()
+    }
+    finally {
+        $listener.Stop()
+    }
+
+    # Read the daemon's auth line.
+    $stream = $client.GetStream()
+    $stream.ReadTimeout = 5000
+    $buffer = New-Object byte[] 1024
+    $text = ''
+    try {
+        while ($text -notmatch "`n") {
+            $count = $stream.Read($buffer, 0, $buffer.Length)
+            if ($count -le 0) { break }
+            $text += [System.Text.Encoding]::UTF8.GetString($buffer, 0, $count)
+        }
+    }
+    catch {
+        Write-Warning 'daemon did not authenticate in time'
+        $client.Close()
+        return $null
+    }
+
+    $line = ($text -split "`n")[0]
+    $presented = $null
+    try { $presented = ($line | ConvertFrom-Json).token } catch { }
+
+    if ($presented -ne $AuthToken) {
+        Write-Warning 'daemon presented a bad token; dropping it'
+        $client.Close()
+        return $null
+    }
+
+    Write-Host 'daemon connected and authenticated' -ForegroundColor Green
+    return $client
+}
+
 function Invoke-Relay {
     <#
         Pump bytes both ways until either side goes away.
@@ -320,6 +399,12 @@ function Invoke-Relay {
 $authToken = Resolve-Token
 
 if ($TestConnection) {
+    if ($Listen) {
+        Write-Host 'In -Listen mode the daemon dials us, so there is nothing to' -ForegroundColor Yellow
+        Write-Host 'test from here. Just run without -TestConnection and start' -ForegroundColor Yellow
+        Write-Host 'the daemon with bridge_mode = "connect".' -ForegroundColor Yellow
+        exit 0
+    }
     Write-Host "Testing $DaemonHost`:$Port ..." -ForegroundColor Cyan
     $result = Test-DaemonLink -AuthToken $authToken
 
@@ -340,13 +425,20 @@ if ($TestConnection) {
             Write-Host "  UNREACHABLE: $script:LastError" -ForegroundColor Red
             Write-Host ''
             Write-Host 'Check that the daemon is running with transport = "network",' -ForegroundColor Yellow
-            Write-Host 'that bridge_host is not 127.0.0.1, and that the port is open.' -ForegroundColor Yellow
+            Write-Host 'and that its machine accepts inbound connections. If it is a' -ForegroundColor Yellow
+            Write-Host 'Cloud PC or VM behind a gateway, it probably cannot -- use' -ForegroundColor Yellow
+            Write-Host 'bridge_mode = "connect" there and run this with -Listen.' -ForegroundColor Yellow
             exit 1
         }
     }
 }
 
-Write-Host "Bridging pad -> $DaemonHost`:$Port" -ForegroundColor Cyan
+if ($Listen) {
+    Write-Host "Bridging pad; waiting for daemon to dial in on port $Port" -ForegroundColor Cyan
+}
+else {
+    Write-Host "Bridging pad -> $DaemonHost`:$Port" -ForegroundColor Cyan
+}
 Write-Host 'Ctrl-C to stop.'
 
 while ($true) {
@@ -374,8 +466,14 @@ while ($true) {
 
     $client = $null
     try {
-        $client = Connect-Daemon -AuthToken $authToken
-        Write-Host 'connected to daemon' -ForegroundColor Green
+        if ($Listen) {
+            $client = Wait-ForDaemon -AuthToken $authToken
+            if (-not $client) { throw 'daemon did not authenticate' }
+        }
+        else {
+            $client = Connect-Daemon -AuthToken $authToken
+            Write-Host 'connected to daemon' -ForegroundColor Green
+        }
         Invoke-Relay -Pad $pad -Client $client
     }
     catch {

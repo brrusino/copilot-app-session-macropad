@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: MIT
+"""Tests for configuration loading and validation."""
+
+import pytest
+
+from macropad_daemon import config as config_module
+
+
+def write(tmp_path, text):
+    path = tmp_path / "macropad.toml"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_defaults_without_a_config_file(tmp_path):
+    cfg = config_module.load(tmp_path / "does-not-exist.toml")
+    assert cfg.pad_transport == "serial"
+    assert cfg.bridge_mode == "listen"
+    assert cfg.hook_port == config_module.DEFAULT_HOOK_PORT
+    assert cfg.bridge_port == config_module.DEFAULT_BRIDGE_PORT
+
+
+def test_connect_mode_round_trips(tmp_path):
+    path = write(
+        tmp_path,
+        """
+        [pad]
+        transport = "network"
+        bridge_mode = "connect"
+        bridge_host = "my-pc"
+        bridge_port = 9001
+        bridge_token = "secret"
+        """,
+    )
+    cfg = config_module.load(path)
+    assert cfg.pad_transport == "network"
+    assert cfg.bridge_mode == "connect"
+    assert cfg.bridge_host == "my-pc"
+    assert cfg.bridge_port == 9001
+    assert cfg.bridge_token == "secret"
+
+
+def test_rejects_unknown_transport(tmp_path):
+    path = write(tmp_path, '[pad]\ntransport = "carrier-pigeon"\n')
+    with pytest.raises(ValueError, match="transport"):
+        config_module.load(path)
+
+
+def test_rejects_unknown_bridge_mode(tmp_path):
+    """A typo here would silently listen instead of dialling, or vice versa."""
+    path = write(tmp_path, '[pad]\nbridge_mode = "sideways"\n')
+    with pytest.raises(ValueError, match="bridge_mode"):
+        config_module.load(path)
+
+
+def test_bridge_mode_is_case_insensitive(tmp_path):
+    path = write(tmp_path, '[pad]\nbridge_mode = "CONNECT"\n')
+    assert config_module.load(path).bridge_mode == "connect"
+
+
+def test_action_bindings_override(tmp_path):
+    path = write(
+        tmp_path,
+        """
+        [actions]
+        approve = "ctrl+enter"
+        interrupt = "ctrl+c"
+        new_session = "ctrl+shift+n"
+        """,
+    )
+    cfg = config_module.load(path)
+    assert cfg.actions.approve == "ctrl+enter"
+    assert cfg.actions.interrupt == "ctrl+c"
+    assert cfg.actions.new_session == "ctrl+shift+n"
+
+
+def test_led_overrides(tmp_path):
+    path = write(
+        tmp_path,
+        """
+        [leds]
+        brightness = 0.25
+        [leds.palette]
+        idle = [[1, 2, 3], "solid"]
+        """,
+    )
+    cfg = config_module.load(path)
+    assert cfg.brightness == 0.25
+    assert cfg.palette["idle"] == [[1, 2, 3], "solid"]
+
+
+def test_daemon_section(tmp_path):
+    path = write(
+        tmp_path,
+        """
+        [daemon]
+        slot_count = 4
+        reconcile_interval = 2.5
+        log_level = "DEBUG"
+        """,
+    )
+    cfg = config_module.load(path)
+    assert cfg.slot_count == 4
+    assert cfg.reconcile_interval == 2.5
+    assert cfg.log_level == "DEBUG"
+
+
+def test_hook_url_base_uses_configured_port(tmp_path):
+    path = write(tmp_path, '[hooks]\nhost = "127.0.0.1"\nport = 9999\n')
+    assert config_module.load(path).hook_url_base == "http://127.0.0.1:9999"

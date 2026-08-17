@@ -175,3 +175,78 @@ def test_token_generated_and_reused(tmp_path):
 def test_token_file_written_to_copilot_home(tmp_path):
     load_or_create_token(tmp_path)
     assert (tmp_path / "macropad.token").is_file()
+
+
+# --- connect mode ---------------------------------------------------------
+# Needed when the daemon's machine cannot accept inbound connections, e.g. a
+# Cloud PC behind a gateway or a firewall you are not an admin on.
+
+
+def test_rejects_unknown_mode():
+    with pytest.raises(ValueError):
+        NetworkLink(lambda m: None, "127.0.0.1", 1234, "t", mode="sideways")
+
+
+def test_connect_mode_dials_out_and_authenticates():
+    """Daemon dials the bridge and presents the token first."""
+    port = free_port()
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", port))
+    server.listen(1)
+    server.settimeout(6)
+
+    net = NetworkLink(lambda m: None, "127.0.0.1", port, TOKEN, mode="connect")
+    net.start()
+    try:
+        conn, _ = server.accept()
+        conn.settimeout(4)
+        line = b""
+        while b"\n" not in line:
+            chunk = conn.recv(256)
+            if not chunk:
+                break
+            line += chunk
+        handshake = json.loads(line.split(b"\n")[0])
+        assert handshake["token"] == TOKEN
+        assert wait_until(lambda: net.connected)
+        conn.close()
+    finally:
+        net.stop()
+        server.close()
+
+
+def test_connect_mode_events_flow_from_bridge():
+    port = free_port()
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", port))
+    server.listen(1)
+    server.settimeout(6)
+
+    recorder = Recorder()
+    net = NetworkLink(recorder, "127.0.0.1", port, TOKEN, mode="connect")
+    net.start()
+    try:
+        conn, _ = server.accept()
+        conn.settimeout(4)
+        conn.recv(512)  # handshake
+        conn.sendall(b'{"t":"down","k":3,"role":"session","slot":0}\n')
+        recorder.wait()
+        assert recorder.events[0]["slot"] == 0
+        conn.close()
+    finally:
+        net.stop()
+        server.close()
+
+
+def test_connect_mode_survives_an_absent_bridge():
+    """No listener yet must mean 'keep retrying', not crash."""
+    net = NetworkLink(lambda m: None, "127.0.0.1", free_port(), TOKEN, mode="connect")
+    net.start()
+    try:
+        time.sleep(1.0)
+        assert net.connected is False
+        assert net.send({"t": "hb"}) is False
+    finally:
+        net.stop()

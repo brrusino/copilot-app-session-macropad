@@ -64,6 +64,11 @@ class Config:
     bridge_host: str = "0.0.0.0"
     bridge_port: int = DEFAULT_BRIDGE_PORT
     bridge_token: str | None = None
+    #: "listen" = the bridge dials in to us. "connect" = we dial out to the
+    #: bridge, which is what you need when this machine cannot accept inbound
+    #: connections (a Cloud PC or VM behind a gateway, or a firewall you are not
+    #: an admin on).
+    bridge_mode: str = "listen"
     hook_host: str = "127.0.0.1"
     hook_port: int = DEFAULT_HOOK_PORT
     slot_count: int = DEFAULT_SLOT_COUNT
@@ -124,6 +129,13 @@ def load(path: Path | None = None) -> Config:
     cfg.bridge_host = pad.get("bridge_host", cfg.bridge_host)
     cfg.bridge_port = int(pad.get("bridge_port", cfg.bridge_port))
     cfg.bridge_token = pad.get("bridge_token") or None
+
+    bridge_mode = str(pad.get("bridge_mode", cfg.bridge_mode)).lower()
+    if bridge_mode not in ("listen", "connect"):
+        raise ValueError(
+            f"[pad] bridge_mode must be 'listen' or 'connect', got {bridge_mode!r}"
+        )
+    cfg.bridge_mode = bridge_mode
 
     hooks = data.get("hooks", {})
     cfg.hook_host = hooks.get("host", cfg.hook_host)

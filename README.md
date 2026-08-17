@@ -81,11 +81,47 @@ This can span up to three machines, so it's worth being explicit:
 | Machine | Role |
 |---|---|
 | **Where the Copilot app runs** | The daemon and the hooks. Must be here — it's where `data.db` and the sessions live. |
-| **Where the pad is plugged in** | Determines how the daemon reaches it, and where dictation types. Ideally the same machine as above, in which case everything just works. |
-| **A machine you can install on** | Bootstrap only — flashing CircuitPython and copying libraries onto the pad. Used once, then irrelevant; it doesn't have to be either of the above. |
+| **Where the pad is plugged in** | Determines how the daemon reaches it, and where dictation types. |
+| **A machine you can install on** | Bootstrap only — flashing CircuitPython and copying libraries onto the pad. Used once, then irrelevant. |
 
 If the first two are the same machine, ignore this section — the default
 `transport = "serial"` just works.
+
+### Quickstart: Windows PC with the pad, RDP into a devbox
+
+The common setup. Pad on the PC in front of you, Copilot app on the devbox.
+
+**On the devbox** (`~/.copilot/macropad.toml`):
+
+```toml
+[pad]
+transport   = "network"
+bridge_mode = "connect"
+bridge_host = "<your-PC-hostname-or-IP>"
+```
+
+```powershell
+cd daemon
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\scripts\install-hooks.ps1
+.\.venv\Scripts\python.exe -m macropad_daemon        # writes ~/.copilot/macropad.token
+```
+
+**On the PC**, after flashing the pad:
+
+```powershell
+.\scripts\pad-bridge.ps1 -Listen -Token <token-from-that-file>
+```
+
+Nothing to install on the PC — `pad-bridge.ps1` uses only what ships with
+Windows. `bridge_mode = "connect"` has the devbox dial *out*, which works even
+when it can't accept inbound connections (Cloud PCs and gateway-fronted VMs
+usually can't).
+
+Dictation goes to the PC, since that's where the pad is plugged in. If your
+dictation tool runs on the devbox instead, RDP forwards the keystrokes there
+anyway — either way it works, with no extra setup.
 
 ### Getting the daemon and the pad connected
 
@@ -113,18 +149,17 @@ the machine holding the pad**, so on a locked-down host it is the one that has
 to work. USB-CDC redirection is not always reliable, so test it early.
 
 **Option 2: run a bridge on the pad's machine.** A small relay forwards the pad
-to the daemon over TCP. Two versions, both needing only what they say:
+to the daemon over TCP. Two versions:
 
-- `scripts/pad_bridge.py` — needs Python and `pyserial`.
 - `scripts/pad-bridge.ps1` — needs only Windows PowerShell, which ships with
-  Windows. Uses built-in .NET types (`System.IO.Ports.SerialPort`,
-  `System.Net.Sockets.TcpClient`), so there is nothing to install.
+  Windows. Uses built-in .NET types, so there is **nothing to install**.
+- `scripts/pad_bridge.py` — same job, needs Python and `pyserial`.
 
-Verify the link before wiring up hardware:
-
-```powershell
-.\pad-bridge.ps1 -DaemonHost <devbox> -Token <token> -TestConnection
-```
+This is the right choice when you work on a machine you control and RDP into the
+machine running the Copilot app. See
+[Using the network bridge](#using-the-network-bridge) — and note that the daemon
+can dial *out* to the bridge, which matters when its own machine can't accept
+inbound connections.
 
 ### When the pad's machine can run nothing at all
 
@@ -230,29 +265,69 @@ cd daemon
 
 ## Using the network bridge
 
-Only needed if the pad is on a different machine from the daemon *and* that
-machine can run something. On the **daemon machine**:
+Use this when the pad is plugged into a different machine from the daemon and
+that machine can run something. Typical case: you work on a Windows PC with the
+pad attached, and RDP into a devbox where the Copilot app runs.
+
+### Which side dials?
+
+This matters more than it sounds. The daemon's machine often **cannot accept
+inbound connections** — a Cloud PC or VM behind a gateway, or a firewall you're
+not an administrator on. Outbound almost always works where inbound doesn't, so
+there are two modes:
+
+| `bridge_mode` | Who dials | Use when |
+|---|---|---|
+| `listen` | bridge → daemon | The daemon's machine accepts inbound connections. |
+| `connect` | daemon → bridge | It doesn't. **Start here if the daemon runs on a Cloud PC or VM.** |
+
+Either way the token is presented by whichever side dials out, so security is
+identical.
+
+### Recommended: daemon dials out (`connect`)
+
+On the **daemon machine** (`~/.copilot/macropad.toml`):
 
 ```toml
 [pad]
-transport = "network"
+transport   = "network"
+bridge_mode = "connect"
+bridge_host = "<your-PC-hostname-or-IP>"
+bridge_port = 7831
+```
+
+Run the daemon once to generate `~/.copilot/macropad.token`, and copy that value.
+
+On the **PC with the pad**:
+
+```powershell
+.\pad-bridge.ps1 -Listen -Token <token>
+```
+
+That's it. The daemon keeps retrying until the bridge appears, and redials if
+the link drops, so you can start them in either order.
+
+`pad-bridge.ps1` needs **nothing installed** — Windows PowerShell ships with
+Windows and the script uses only built-in .NET types. If you prefer Python,
+`pad_bridge.py` does the same job with `pyserial`.
+
+### If the daemon's machine does accept inbound
+
+```toml
+[pad]
+transport   = "network"
+bridge_mode = "listen"
 bridge_host = "0.0.0.0"
 bridge_port = 7831
 ```
 
-Start the daemon once; it writes a shared token to `~/.copilot/macropad.token`.
-Then on the **machine with the pad**, copy `scripts/pad_bridge.py` across and
-run it:
-
-```bash
-pip install pyserial
-python pad_bridge.py --host <daemon-host> --token <token-from-that-file>
+```powershell
+.\pad-bridge.ps1 -DaemonHost <devbox> -Token <token> -TestConnection   # verify first
+.\pad-bridge.ps1 -DaemonHost <devbox> -Token <token>
 ```
 
-The bridge depends on nothing but `pyserial`, so that machine doesn't need the
-rest of this project — a clone or a single copied file is enough. It connects
-outbound to the daemon, so it needs no inbound firewall change on its own side.
-Both ends reconnect by themselves if the pad is replugged or the link drops.
+`-TestConnection` checks reachability and the token before any hardware is
+involved. If it reports UNREACHABLE, switch to `connect` mode above.
 
 ## If the daemon can't reach the pad
 

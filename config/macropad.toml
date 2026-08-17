@@ -13,17 +13,31 @@
 #   "serial"  - the pad's serial port is visible to this machine. That includes
 #               a directly-plugged pad, and a pad on an RDP client whose COM
 #               port is redirected into the session (nothing to install).
-#   "network" - the pad is on another machine that relays here via
-#               scripts/pad_bridge.py. That machine needs Python + pyserial,
-#               so this is only an option if you can install software there.
+#   "network" - the pad is on another machine running scripts/pad_bridge.py or
+#               scripts/pad-bridge.ps1.
 transport = "serial"
 
 # Only used when transport = "network".
-# bridge_host must be an address the bridge machine can reach; "0.0.0.0"
-# listens on every interface.
+#
+# bridge_mode decides WHICH SIDE DIALS:
+#
+#   "listen"  - the bridge dials in to us. Simplest, but requires this machine
+#               to accept inbound connections on bridge_port.
+#   "connect" - we dial out to a listener on the bridge machine. Use this when
+#               this machine cannot accept inbound connections: a Cloud PC or
+#               VM behind a gateway, or a firewall you are not an admin on.
+#               Pair it with `pad-bridge.ps1 -Listen` on the other side.
+#
+# Outbound is almost always permitted where inbound is not, so "connect" is the
+# safer choice when in doubt.
+bridge_mode = "listen"
+
+# In "listen" mode: the interface to bind ("0.0.0.0" = all).
+# In "connect" mode: the hostname or IP of the machine running the bridge.
 bridge_host = "0.0.0.0"
 bridge_port = 7831
-# Shared secret the bridge must present. Generated into
+
+# Shared secret. Whichever side dials out presents it first. Generated into
 # ~/.copilot/macropad.token on first run if left unset.
 # bridge_token = "..."
 

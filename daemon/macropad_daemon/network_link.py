@@ -22,6 +22,24 @@ Access control
 Unlike the serial transport this opens a real network socket, so the bridge must
 present a shared token as its first frame. Connections that fail to authenticate
 are dropped without a reply.
+
+Connection direction
+--------------------
+Two modes, because which end can accept a connection depends on the network:
+
+``listen`` (default)
+    The daemon listens and the bridge dials in. Simplest when the daemon's
+    machine accepts inbound connections.
+
+``connect``
+    The daemon dials out to a listener on the bridge machine. Needed when the
+    daemon runs somewhere that cannot accept inbound connections -- a Cloud PC
+    or VM behind a gateway, or any host whose firewall you cannot edit because
+    you are not an administrator on it. Outbound is almost always permitted
+    where inbound is not.
+
+The authentication handshake is identical in both directions: whichever side
+dials out sends the token first.
 """
 
 from __future__ import annotations
@@ -40,6 +58,7 @@ EventCallback = Callable[[dict], None]
 
 TOKEN_FILENAME = "macropad.token"
 AUTH_TIMEOUT = 5.0
+DIAL_RETRY_DELAY = 3.0
 
 
 def load_or_create_token(copilot_home: Path) -> str:
@@ -57,7 +76,7 @@ def load_or_create_token(copilot_home: Path) -> str:
 
 
 class NetworkLink:
-    """Accepts a single pad bridge connection and speaks the pad protocol."""
+    """Carries the pad protocol over TCP, in either connection direction."""
 
     def __init__(
         self,
@@ -65,10 +84,14 @@ class NetworkLink:
         host: str,
         port: int,
         token: str,
+        mode: str = "listen",
     ) -> None:
+        if mode not in ("listen", "connect"):
+            raise ValueError(f"mode must be 'listen' or 'connect', got {mode!r}")
         self._on_event = on_event
         self.host = host
         self.port = port
+        self.mode = mode
         self._token = token
         self._listener: socket.socket | None = None
         self._client: socket.socket | None = None
@@ -85,13 +108,21 @@ class NetworkLink:
         self._on_connect = callback
 
     def start(self) -> None:
+        self._stop.clear()
+        if self.mode == "connect":
+            self._thread = threading.Thread(
+                target=self._dial_loop, name="macropad-net", daemon=True
+            )
+            self._thread.start()
+            log.info("pad bridge: dialling %s:%d", self.host, self.port)
+            return
+
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
         listener.bind((self.host, self.port))
         listener.listen(1)
         listener.settimeout(0.5)
         self._listener = listener
-        self._stop.clear()
         self._thread = threading.Thread(target=self._accept_loop, name="macropad-net", daemon=True)
         self._thread.start()
         log.info("pad bridge listener on %s:%d", self.host, self.port)
@@ -132,6 +163,51 @@ class NetworkLink:
                 client.close()
             except OSError:
                 pass
+
+    def _dial_loop(self) -> None:
+        """Outbound mode: keep trying to reach the bridge's listener.
+
+        The daemon is the one that authenticates here, since it is the side
+        dialling out.
+        """
+        announced_down = False
+        while not self._stop.is_set():
+            try:
+                sock = socket.create_connection((self.host, self.port), timeout=10)
+            except OSError as exc:
+                if not announced_down:
+                    log.info("pad bridge not reachable at %s:%d (%s); retrying",
+                             self.host, self.port, exc)
+                    announced_down = True
+                else:
+                    log.debug("pad bridge still unreachable")
+                self._stop.wait(DIAL_RETRY_DELAY)
+                continue
+
+            try:
+                sock.sendall(
+                    json.dumps({"t": "auth", "token": self._token}).encode() + b"\n"
+                )
+            except OSError:
+                sock.close()
+                self._stop.wait(DIAL_RETRY_DELAY)
+                continue
+
+            announced_down = False
+            sock.settimeout(0.5)
+            self._client = sock
+            log.info("pad bridge connected to %s:%d", self.host, self.port)
+            if self._on_connect:
+                try:
+                    self._on_connect()
+                except Exception:
+                    log.exception("on_connect handler failed")
+
+            self._read_loop(sock)
+            self._drop_client()
+            if not self._stop.is_set():
+                log.info("pad bridge disconnected; will redial")
+                self._stop.wait(DIAL_RETRY_DELAY)
 
     def _accept_loop(self) -> None:
         while not self._stop.is_set():

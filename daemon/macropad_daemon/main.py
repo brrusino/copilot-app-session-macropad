@@ -67,6 +67,7 @@ class Daemon:
                 host=cfg.bridge_host,
                 port=cfg.bridge_port,
                 token=token,
+                mode=cfg.bridge_mode,
             )
 
         from .serial_link import SerialLink
