@@ -242,6 +242,11 @@ git clone https://github.com/brrusino/copilot-app-session-macropad
 cd copilot-app-session-macropad
 ```
 
+> If any script gives **"permission denied"**, it just isn't marked executable
+> on your machine. Either run it with `bash` in front —
+> `bash scripts/flash-firmware.sh --install-circuitpython` — or fix it once with
+> `chmod +x scripts/*.sh`.
+
 **Put CircuitPython on the pad.** A fresh Keybow 2040 has no Python on it, so
 this is a one-time step.
 
