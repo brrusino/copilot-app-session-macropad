@@ -277,30 +277,39 @@ def _print_ports() -> int:
     try:
         from serial.tools import list_ports
 
-        from .serial_link import CIRCUITPYTHON_VIDS, candidate_ports, probe
+        from .serial_link import (
+            CIRCUITPYTHON_VIDS,
+            candidate_ports,
+            probe,
+            registry_ports,
+        )
     except ImportError:
         print("pyserial is not installed:  pip install pyserial", file=sys.stderr)
         return 2
 
     ports = list(list_ports.comports())
-    if not ports:
+    enumerated = {p.device.upper() for p in ports}
+    # Redirected ports show up in the registry but not in pyserial's SetupAPI
+    # enumeration, so report them separately rather than appearing to see nothing.
+    redirected = [p for p in registry_ports() if p.upper() not in enumerated]
+
+    if not ports and not redirected:
         print("No serial ports visible at all.")
         print()
         _print_redirection_help()
         return 1
 
-    print(f"{len(ports)} serial port(s) visible:")
-    for info in ports:
-        vid = f"{info.vid:04X}" if info.vid else "----"
-        description = info.description or ""
-        note = ""
-        if info.vid in CIRCUITPYTHON_VIDS:
-            note = "  <- CircuitPython vendor id"
-        elif _looks_redirected(info):
-            # A port redirected over RDP has no USB vendor id of its own; it is
-            # a virtual port created by the RDP device-redirection driver.
-            note = "  <- looks like an RDP-redirected port"
-        print(f"  {info.device:<10} VID:{vid}  {description}{note}")
+    if ports:
+        print(f"{len(ports)} enumerated serial port(s):")
+        for info in ports:
+            vid = f"{info.vid:04X}" if info.vid else "----"
+            note = "  <- CircuitPython vendor id" if info.vid in CIRCUITPYTHON_VIDS else ""
+            print(f"  {info.device:<10} VID:{vid}  {info.description or ''}{note}")
+
+    if redirected:
+        print(f"{len(redirected)} registry-only port(s), typically RDP-redirected:")
+        for name in redirected:
+            print(f"  {name}")
 
     print()
     print("Probing for the pad (each candidate gets a few seconds)...")
@@ -322,14 +331,6 @@ def _print_ports() -> int:
     print()
     _print_redirection_help()
     return 1
-
-
-def _looks_redirected(info) -> bool:
-    """Heuristic: a redirected port has no USB vid and an RDP-ish description."""
-    if info.vid:
-        return False
-    text = f"{info.description or ''} {info.hwid or ''}".lower()
-    return any(hint in text for hint in ("redirect", "terminal", "rdp", "tsclient"))
 
 
 def _print_redirection_help() -> None:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import threading
 import time
 from typing import Callable
@@ -34,6 +35,42 @@ PROBE_TIMEOUT = 3.5
 RECONNECT_DELAY = 2.0
 
 
+def registry_ports() -> list[str]:
+    """Serial ports listed in the registry's SERIALCOMM map (Windows only).
+
+    This matters for RDP. A COM port redirected into a remote session is
+    registered in ``HKLM\\HARDWARE\\DEVICEMAP\\SERIALCOMM`` but does **not**
+    appear in pyserial's ``comports()``, which enumerates SetupAPI device
+    classes. Without this, a correctly-redirected pad is invisible to discovery.
+
+    Returns an empty list on non-Windows or if the key cannot be read.
+    """
+    if sys.platform != "win32":
+        return []
+    try:
+        import winreg
+    except ImportError:  # pragma: no cover - Windows always has winreg
+        return []
+
+    found: list[str] = []
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DEVICEMAP\SERIALCOMM"
+        ) as key:
+            index = 0
+            while True:
+                try:
+                    _name, value, _type = winreg.EnumValue(key, index)
+                except OSError:
+                    break
+                if isinstance(value, str) and value.upper().startswith("COM"):
+                    found.append(value)
+                index += 1
+    except OSError:
+        return []
+    return found
+
+
 def candidate_ports() -> list[str]:
     """Plausible pad ports, best guess first.
 
@@ -49,9 +86,10 @@ def candidate_ports() -> list[str]:
     """
     matches = []
     others = []
+    seen = set()
     for info in list_ports.comports():
-        target = matches if info.vid in CIRCUITPYTHON_VIDS else others
-        target.append(info)
+        seen.add(info.device.upper())
+        (matches if info.vid in CIRCUITPYTHON_VIDS else others).append(info)
 
     def rank(info) -> tuple:
         hwid = (info.hwid or "").upper()
@@ -63,9 +101,10 @@ def candidate_ports() -> list[str]:
         matches.sort(key=rank)
         return [i.device for i in matches]
 
-    # No recognised vendor id: the board may be reporting something unexpected,
-    # so try everything rather than refusing to find it at all.
-    return [i.device for i in others]
+    # Registry-only ports are almost always RDP-redirected, which is exactly the
+    # case we care about, so try them ahead of ordinary local ports.
+    redirected = [p for p in registry_ports() if p.upper() not in seen]
+    return redirected + [i.device for i in others]
 
 
 def probe(port: str, baud: int, timeout: float = PROBE_TIMEOUT) -> bool:
