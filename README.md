@@ -81,50 +81,80 @@ This can span up to three machines, so it's worth being explicit:
 | Machine | Role |
 |---|---|
 | **Where the Copilot app runs** | The daemon and the hooks. Must be here — it's where `data.db` and the sessions live. |
-| **Where the pad is plugged in** | The machine you type on. Dictation types here, natively, with nothing installed. |
+| **Where the pad is plugged in** | Determines how the daemon reaches it, and where dictation types. Ideally the same machine as above, in which case everything just works. |
 | **A machine you can install on** | Bootstrap only — flashing CircuitPython and copying libraries onto the pad. Used once, then irrelevant; it doesn't have to be either of the above. |
 
-If all of these are the same machine, ignore this section — the default
+If the first two are the same machine, ignore this section — the default
 `transport = "serial"` just works.
 
 ### Getting the daemon and the pad connected
 
-**Dictation goes wherever the pad is plugged in.** It's raw USB HID, so the pad
-types Ctrl+Win into whatever machine it's physically connected to, with no
-software on that machine at all. That means the pad belongs on the machine you
-actually type on — which is settled, and isn't the trade-off.
+**Dictation works regardless, and needs nothing installed.** The pad is a USB
+HID keyboard, so it types Ctrl+Win into whatever it's plugged into, and RDP
+forwards keystrokes to the remote session like any other typing. If your
+dictation tool runs on the remote machine, the chord reaches it. This is the key
+you press most, and it has no dependency on anything below.
 
-The open question is only how the daemon reaches it, since the daemon has to
-live with the Copilot app. Two ways:
+**LED state and focus-on-press need a data channel**, and that is a genuinely
+harder problem when the pad's machine is locked down.
 
-**Option 1: RDP COM port redirection.** Redirects the pad's serial port into
-the session so the daemon can talk to it. Nothing to install anywhere — it's a
-checkbox in the RDP client (*Local Resources → More → Ports*). If the port
-appears in the session, keep the default `transport = "serial"` and you're done.
-
-This is the only option that needs no software on the machine holding the pad,
-so **if that machine is locked down, this is the one that has to work.**
-USB-CDC redirection isn't always reliable and may simply not show up; it costs
-a minute to find out.
-
-To check whether it worked, on the daemon machine run:
+**Option 1: pad's serial port is visible to the daemon.** Either the pad is
+plugged directly into the daemon machine, or its COM port is redirected into an
+RDP session (*Local Resources → More → Ports* in the client — a checkbox, not an
+install). Keep `transport = "serial"` and check with:
 
 ```powershell
 python -m macropad_daemon --ports
 ```
 
-That lists every serial port visible in the session, flags any with a
-CircuitPython vendor id, and probes each one for the pad. It tells you plainly
-whether the port made it through.
+That lists every visible serial port, flags CircuitPython vendor ids, and probes
+each for the pad. **This is the only option that requires nothing whatsoever on
+the machine holding the pad**, so on a locked-down host it is the one that has
+to work. USB-CDC redirection is not always reliable, so test it early.
 
-**Option 2: the network bridge.** A small relay runs on the machine holding the
-pad and forwards to the daemon over TCP. Fully functional, but it needs Python
-and `pyserial` **on that machine** — so it's only viable if you can install
-there. Use it when the pad's host is a machine you control, not a locked-down
-one.
+**Option 2: run a bridge on the pad's machine.** A small relay forwards the pad
+to the daemon over TCP. Two versions, both needing only what they say:
 
-If neither works, dictation still functions on its own — see
-[If the daemon can't reach the pad](#if-the-daemon-cant-reach-the-pad).
+- `scripts/pad_bridge.py` — needs Python and `pyserial`.
+- `scripts/pad-bridge.ps1` — needs only Windows PowerShell, which ships with
+  Windows. Uses built-in .NET types (`System.IO.Ports.SerialPort`,
+  `System.Net.Sockets.TcpClient`), so there is nothing to install.
+
+Verify the link before wiring up hardware:
+
+```powershell
+.\pad-bridge.ps1 -DaemonHost <devbox> -Token <token> -TestConnection
+```
+
+### When the pad's machine can run nothing at all
+
+If the machine holding the pad permits no Python, no PowerShell, and no COM
+redirection, then **there is no way to drive the LEDs or focus sessions from
+it.** Worth stating plainly rather than half-trying workarounds:
+
+- Both bridges need *something* executable on that machine. Ruled out by
+  definition.
+- Keyboard LED state is not a usable back-channel. It is the one host→device
+  path a HID keyboard has, but
+  [RDP does not sync lock-key state back to the local keyboard](https://github.com/MicrosoftDocs/SupportArticles-docs/blob/main/support/windows-server/remote/caps-lock-key-status-not-synced-to-client.md)
+  — Microsoft documents this. The remote session's lock state never reaches the
+  physical device, so a pad on the client cannot learn anything from it.
+- Other RDP channels (clipboard, drive redirection) reach the *client machine*,
+  not a USB device attached to it, so they cannot carry state to the pad either.
+
+**What to do instead: plug the pad into the machine running the Copilot app.**
+The daemon then talks to it directly over USB with `transport = "serial"` and
+everything works — LEDs, session keys, the lot.
+
+Over RDP that machine is the remote one, so this needs USB redirection at the
+hypervisor or RDP layer (Hyper-V enhanced session, VMware/Parallels USB
+passthrough, or a USB-over-IP appliance). Those attach the device to the remote
+machine rather than running software on the local one, which is why they're
+compatible with a locked-down client.
+
+Dictation is unaffected by that choice: the pad's Ctrl+Win chord goes to
+whichever machine it's attached to, and if your dictation tool runs on the
+remote machine, that is exactly where you want it.
 
 ## Setup
 
@@ -200,8 +230,8 @@ cd daemon
 
 ## Using the network bridge
 
-Only needed if you picked Option 2 — that is, if the machine holding the pad is
-one you can install Python on. On the **daemon machine**:
+Only needed if the pad is on a different machine from the daemon *and* that
+machine can run something. On the **daemon machine**:
 
 ```toml
 [pad]
@@ -226,36 +256,19 @@ Both ends reconnect by themselves if the pad is replugged or the link drops.
 
 ## If the daemon can't reach the pad
 
-If COM redirection doesn't materialise and you can't install on the machine
-holding the pad, the pad isn't useless — it degrades to a known state rather
-than failing.
+The pad degrades to a known state rather than failing:
 
-**Still works, with nothing installed:**
+- **Dictation still works.** Pure firmware HID, no daemon, no serial port.
+- **Session keys show a dim "disconnected" colour**, so you can see at a glance
+  that state isn't live rather than trusting stale colours.
+- **Lost:** LED session state, and pressing a key to focus a session.
 
-- **Dictation.** The chord is pure firmware HID. This is the key you press most,
-  and it needs no daemon, no serial port and no bridge.
-- **The pad's own lighting.** Session keys sit on a dim "disconnected" colour so
-  you can see at a glance that state isn't live, rather than being shown stale
-  colours you might trust.
+Still worth doing on the daemon side: install the hooks and run
+`python -m macropad_daemon --status`, which prints the same information the LEDs
+would show. It also means everything is in place the moment a transport appears.
 
-**Doesn't work:** LED session state, and pressing a key to focus a session —
-both need a channel to the daemon.
-
-**Still worth doing on the daemon side:** installing the hooks and running
-`python -m macropad_daemon --status` gives you the same information the LEDs
-would have shown, printed. It also means the moment a transport does appear,
-everything else is already in place.
-
-Two further options if you want to keep pushing:
-
-- **A USB extension to a machine you control.** If the pad can reach a machine
-  you can run Python on that's still within arm's reach, Option 2 applies —
-  but check dictation still lands where you want it first.
-- **HID output reports instead of serial.** The pad already enumerates as a USB
-  keyboard, and that channel carries host→device data (it's how keyboard lock
-  LEDs work). Routing state over it would need no serial port and no software on
-  the pad's machine. Not implemented here — it's real firmware work — but it's
-  the path that sidesteps the constraint entirely.
+See [When the pad's machine can run nothing at all](#when-the-pads-machine-can-run-nothing-at-all)
+for why some setups have no transport available, and what to do about it.
 
 ## Which session is on which key
 
