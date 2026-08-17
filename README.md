@@ -232,24 +232,44 @@ be stale. Dictation is unaffected. If you want the LEDs, you need Option 1 or 2.
 ### 1. Bootstrap the pad
 
 Do this on any machine you can install software on — a Mac is fine. It doesn't
-have to be the machine that ends up hosting the pad day to day; once flashed,
-the pad is self-contained.
+have to be the machine that ends up hosting the pad; once flashed, the pad is
+self-contained.
 
-**Put CircuitPython on the pad** if it isn't already. Hold **BOOT** while
-plugging it in, then copy the
-[Keybow 2040 CircuitPython `.uf2`](https://circuitpython.org/board/pimoroni_keybow2040/)
-onto the `RPI-RP2` volume that appears. The board reboots as `CIRCUITPY`.
-
-**Copy the firmware and its libraries:**
+**Get the code:**
 
 ```bash
 git clone https://github.com/brrusino/copilot-app-session-macropad
 cd copilot-app-session-macropad
+```
+
+**Put CircuitPython on the pad.** A fresh Keybow 2040 has no Python on it, so
+this is a one-time step.
+
+The pad's chip has a permanent bootloader built in. Hold the small **BOOT**
+button while plugging the USB-C cable in, and the pad pretends to be a USB stick
+called **`RPI-RP2`**. Copying a `.uf2` file onto that stick makes it flash itself
+and reboot — you don't "run" a `.uf2`, you just copy it.
+
+```bash
+# 1. Unplug the pad.
+# 2. Hold BOOT, plug the cable back in, then let go.
+#    A drive named RPI-RP2 appears.
+./scripts/flash-firmware.sh --install-circuitpython
+```
+
+That downloads the right CircuitPython build and copies it across. macOS often
+warns *"disk was not ejected properly"* — that's the pad rebooting mid-copy and
+is completely normal. Wait a few seconds and a new drive named **`CIRCUITPY`**
+appears.
+
+**Copy the firmware and its libraries:**
+
+```bash
 ./scripts/flash-firmware.sh --fetch-libs
 ```
 
-`--fetch-libs` downloads the three libraries the firmware needs straight onto
-the pad, so there's nothing to install on the machine you're flashing from:
+`--fetch-libs` downloads the three libraries the firmware needs directly onto the
+pad, so nothing is installed on the machine you're flashing from:
 
 | Library | Why |
 |---|---|
@@ -257,13 +277,13 @@ the pad, so there's nothing to install on the machine you're flashing from:
 | `adafruit_hid` | the dictation keystroke chord |
 | `adafruit_is31fl3731` | the LED matrix driver PMK sits on top of |
 
-On Windows use `.\scripts\flash-firmware.ps1` and install those three into
-`CIRCUITPY\lib\` yourself, from the
+**Then unplug and replug the pad.** `boot.py` enables the USB serial data port,
+and that only takes effect on a full power cycle — a soft reload won't do it.
+
+On Windows use `.\scripts\flash-firmware.ps1`, and install those three libraries
+into `CIRCUITPY\lib\` yourself from the
 [PMK library](https://github.com/pimoroni/pmk-circuitpython) and the
 [Adafruit bundle](https://circuitpython.org/libraries).
-
-**Then unplug and replug the pad.** `boot.py` enables the USB serial data port,
-and that only takes effect on a hard reset — a soft reload won't do it.
 
 ### 2. Daemon
 

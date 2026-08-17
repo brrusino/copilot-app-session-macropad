@@ -5,9 +5,9 @@
 # macOS/Linux counterpart of flash-firmware.ps1.
 #
 # Usage:
-#   ./flash-firmware.sh              # copy the real firmware
-#   ./flash-firmware.sh --fetch-libs # also download the 3 required libraries
-#   ./flash-firmware.sh --calibrate  # copy calibrate.py as code.py instead
+#   ./flash-firmware.sh --install-circuitpython   # step 1: put CircuitPython on
+#   ./flash-firmware.sh --fetch-libs              # step 2: firmware + libraries
+#   ./flash-firmware.sh --calibrate               # copy calibrate.py as code.py
 #   ./flash-firmware.sh --drive /Volumes/CIRCUITPY
 #
 # Two things worth knowing:
@@ -28,11 +28,17 @@ FIRMWARE_DIR="$REPO_ROOT/keybow"
 DRIVE=""
 CALIBRATE=0
 FETCH_LIBS=0
+INSTALL_CP=0
+
+# Pinned so a future CircuitPython release can't silently change behaviour.
+CIRCUITPYTHON_VERSION="10.2.1"
+CIRCUITPYTHON_UF2="https://downloads.circuitpython.org/bin/pimoroni_keybow2040/en_US/adafruit-circuitpython-pimoroni_keybow2040-en_US-${CIRCUITPYTHON_VERSION}.uf2"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --calibrate) CALIBRATE=1; shift ;;
         --fetch-libs) FETCH_LIBS=1; shift ;;
+        --install-circuitpython) INSTALL_CP=1; shift ;;
         --drive) DRIVE="${2:-}"; shift 2 ;;
         -h|--help) sed -n '3,24p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -40,6 +46,61 @@ while [[ $# -gt 0 ]]; do
 done
 
 REQUIRED_LIBS=(pmk adafruit_hid adafruit_is31fl3731)
+
+install_circuitpython() {
+    # A .uf2 is not a program you run. The RP2040 chip has a permanent
+    # bootloader: hold BOOT while plugging in and it pretends to be a USB stick
+    # called RPI-RP2. Copying a .uf2 onto that stick makes it flash itself and
+    # reboot. That is the whole mechanism.
+    local boot_vol=""
+    for base in /Volumes "/media/${USER:-}" "/run/media/${USER:-}" /media; do
+        [[ -d "$base" ]] || continue
+        while IFS= read -r path; do
+            [[ -n "$path" ]] && boot_vol="$path"
+        done < <(find "$base" -maxdepth 2 -iname 'RPI-RP2' 2>/dev/null || true)
+    done
+
+    if [[ -z "$boot_vol" ]]; then
+        cat >&2 <<'EOF'
+Could not find the RPI-RP2 volume.
+
+To get the pad into bootloader mode:
+  1. Unplug the pad.
+  2. Press and HOLD the small BOOT button on the board.
+  3. While still holding it, plug the USB-C cable back in.
+  4. Let go. A drive named RPI-RP2 should appear.
+
+Then run this command again.
+EOF
+        return 1
+    fi
+
+    echo "Found bootloader volume: $boot_vol"
+    local tmp
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' RETURN
+
+    echo "Downloading CircuitPython ${CIRCUITPYTHON_VERSION} ..."
+    if ! curl -fsSL "$CIRCUITPYTHON_UF2" -o "$tmp/cp.uf2"; then
+        echo "Download failed: $CIRCUITPYTHON_UF2" >&2
+        return 1
+    fi
+
+    echo "Copying it to the pad ..."
+    # The board reboots the instant it has the file, so the copy often reports
+    # an error or "disk not ejected properly". That is expected, not a failure.
+    cp "$tmp/cp.uf2" "$boot_vol/" 2>/dev/null || true
+    sync 2>/dev/null || true
+
+    echo
+    echo "CircuitPython is being written. The pad will reboot on its own."
+    echo "Ignore any 'disk was not ejected properly' warning -- that is the"
+    echo "board rebooting mid-copy, and is normal."
+    echo
+    echo "Wait for a drive named CIRCUITPY to appear, then run:"
+    echo "    ./scripts/flash-firmware.sh --fetch-libs"
+    return 0
+}
 
 fetch_libs() {
     local dest="$1/lib"
@@ -104,6 +165,11 @@ find_circuitpy() {
     fi
 }
 
+if [[ $INSTALL_CP -eq 1 ]]; then
+    install_circuitpython
+    exit $?
+fi
+
 if [[ -z "$DRIVE" ]]; then
     DRIVE="$(find_circuitpy || true)"
 fi
@@ -112,11 +178,12 @@ if [[ -z "$DRIVE" ]]; then
     cat >&2 <<'EOF'
 No CIRCUITPY volume found.
 
-Check that:
-  1. The Keybow 2040 is plugged in.
-  2. It is running CircuitPython, not the stock firmware.
-     Flash the CircuitPython .uf2 by holding BOOT while plugging in, then
-     copying the .uf2 onto the RPI-RP2 volume that appears.
+If you have not installed CircuitPython on the pad yet, do that first:
+    ./scripts/flash-firmware.sh --install-circuitpython
+
+If you have, check that the pad is plugged in and that a drive named
+CIRCUITPY appears in Finder. If you see RPI-RP2 instead, the board is still
+in bootloader mode -- run the command above.
 EOF
     exit 1
 fi
