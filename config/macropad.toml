@@ -10,11 +10,16 @@
 [pad]
 # How the daemon reaches the pad.
 #
-#   "serial"  - the pad's serial port is visible to this machine. That includes
-#               a directly-plugged pad, and a pad on an RDP client whose COM
-#               port is redirected into the session (nothing to install).
+#   "serial"  - the pad's serial port is visible to this machine. That covers a
+#               directly-plugged pad AND a pad on an RDP client whose COM port
+#               is redirected into the session (a client-side checkbox, no
+#               install, no admin). This is the one to want: fully
+#               bidirectional, so the LEDs work.
 #   "network" - the pad is on another machine running scripts/pad_bridge.py or
 #               scripts/pad-bridge.ps1.
+#   "hid"     - last resort. The pad TYPES F13-F24 and we catch them as global
+#               hotkeys, which needs nothing at all on the pad's machine.
+#               Input only: a keyboard has no return path, so no LED state.
 transport = "serial"
 
 # Only used when transport = "network".

@@ -50,14 +50,20 @@ class Daemon:
     def _build_link(self, cfg: config_module.Config):
         """Pick the pad transport.
 
-        ``serial`` is a pad on this machine. ``network`` accepts a relay from
-        scripts/pad_bridge.py, which is what you want when the daemon runs on a
-        different machine from the one the pad is plugged into -- an RDP
-        session, for instance.
+        ``serial``  - pad's serial port is visible to this machine.
+        ``network`` - a bridge relays the pad from another machine.
+        ``hid``     - the pad drives us by *typing* F13-F24, which survives RDP
+                      with nothing installed on the pad's machine. Input only:
+                      a keyboard has no return path, so there is no LED state.
 
         Imported lazily so the hardware-free modes (--status, --print-hooks,
         --install-hooks) work without pyserial installed.
         """
+        if cfg.pad_transport == "hid":
+            from .hotkey_input import HotkeyListener
+
+            return HotkeyListener(self._on_hotkey)
+
         if cfg.pad_transport == "network":
             from .network_link import NetworkLink, load_or_create_token
 
@@ -77,6 +83,15 @@ class Daemon:
             port=cfg.serial_port,
             baud=cfg.serial_baud,
         )
+
+    def _on_hotkey(self, kind: str, index: int) -> None:
+        """A pad keystroke arrived via the global-hotkey transport."""
+        from .hotkey_input import ACTIONS
+
+        if kind == "session":
+            self._activate_session(index)
+        elif kind == "action" and index < len(ACTIONS):
+            self._run_action(ACTIONS[index])
 
     # -- inputs ----------------------------------------------------------
 
@@ -271,16 +286,21 @@ def _print_ports() -> int:
     if not ports:
         print("No serial ports visible at all.")
         print()
-        print("If the pad is plugged into an RDP client, enable COM port")
-        print("redirection in the client (Local Resources -> More -> Ports),")
-        print("then reconnect the session.")
+        _print_redirection_help()
         return 1
 
     print(f"{len(ports)} serial port(s) visible:")
     for info in ports:
         vid = f"{info.vid:04X}" if info.vid else "----"
-        known = " <- CircuitPython vendor id" if info.vid in CIRCUITPYTHON_VIDS else ""
-        print(f"  {info.device:<10} VID:{vid}  {info.description or ''}{known}")
+        description = info.description or ""
+        note = ""
+        if info.vid in CIRCUITPYTHON_VIDS:
+            note = "  <- CircuitPython vendor id"
+        elif _looks_redirected(info):
+            # A port redirected over RDP has no USB vendor id of its own; it is
+            # a virtual port created by the RDP device-redirection driver.
+            note = "  <- looks like an RDP-redirected port"
+        print(f"  {info.device:<10} VID:{vid}  {description}{note}")
 
     print()
     print("Probing for the pad (each candidate gets a few seconds)...")
@@ -294,10 +314,35 @@ def _print_ports() -> int:
         print(f"  {port}: no response")
 
     print()
-    print("No port answered. If the pad is plugged in and flashed, check that")
-    print("you replugged it after the first install so boot.py could enable")
-    print("the USB serial data port.")
+    print("No port answered.")
+    print()
+    print("If the pad is plugged into THIS machine, check that you replugged it")
+    print("after the first firmware install so boot.py could enable the USB")
+    print("serial data port.")
+    print()
+    _print_redirection_help()
     return 1
+
+
+def _looks_redirected(info) -> bool:
+    """Heuristic: a redirected port has no USB vid and an RDP-ish description."""
+    if info.vid:
+        return False
+    text = f"{info.description or ''} {info.hwid or ''}".lower()
+    return any(hint in text for hint in ("redirect", "terminal", "rdp", "tsclient"))
+
+
+def _print_redirection_help() -> None:
+    print("If the pad is plugged into the machine you are RDP'ing FROM, enable")
+    print("COM port redirection in the RDP client and reconnect:")
+    print()
+    print("  Remote Desktop Connection -> Show Options -> Local Resources")
+    print("    -> More... -> tick 'Ports'")
+    print()
+    print("  or add this line to your .rdp file:")
+    print("      redirectcomports:i:1")
+    print()
+    print("Neither needs administrator rights or any software installed.")
 
 
 def main(argv: list[str] | None = None) -> int:

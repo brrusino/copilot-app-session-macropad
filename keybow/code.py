@@ -62,6 +62,28 @@ def _resolve_chord(names):
 
 _CHORD = _resolve_chord(getattr(config, "DICTATION_CHORD", ("LEFT_CONTROL", "LEFT_GUI")))
 
+# Optional keystroke fallback. F13-F24 are real HID keycodes that no physical
+# keyboard emits and essentially nothing binds, so they survive RDP without
+# colliding with anything you actually type.
+_SEND_FKEYS = bool(getattr(config, "SEND_FUNCTION_KEYS", False))
+_FKEYS = tuple(
+    getattr(Keycode, "F%d" % n, None) for n in range(13, 25)
+)
+
+
+def _function_key_for(key_number):
+    """F13-F20 for session slots, F21-F24 for actions. None if unmapped."""
+    if key_number in config.SESSION_KEYS:
+        index = config.SESSION_KEYS.index(key_number)
+    elif key_number in config.ACTION_KEYS:
+        # Row 3, left to right, continuing after the eight session slots.
+        index = SLOT_COUNT + config.ROWS[2].index(key_number)
+    else:
+        return None
+    if 0 <= index < len(_FKEYS):
+        return _FKEYS[index]
+    return None
+
 # --- serial ---------------------------------------------------------------
 
 _serial = usb_cdc.data
@@ -278,6 +300,15 @@ def _on_down(key_number, now):
         _dictation_down.add(key_number)
     elif key_number in config.ACTION_KEYS:
         _action_flash[key_number] = now + _ACTION_FLASH_SECS
+
+    if _SEND_FKEYS:
+        keycode = _function_key_for(key_number)
+        if keycode is not None:
+            try:
+                _keyboard.send(keycode)
+            except Exception:
+                # A failed keystroke must not break the serial path too.
+                pass
 
     event = {"t": "down", "k": key_number}
     event.update(_describe(key_number))

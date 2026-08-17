@@ -63,6 +63,24 @@ DICTATION_CHORD = ("LEFT_CONTROL", "LEFT_GUI")
 # host so they can be bound later without a reflash.
 FREE_KEYS = (ROWS[3][2], ROWS[3][3])
 
+# Also type F13-F24 when a session or action key is pressed.
+#
+# Leave this False for a normal setup: the pad talks to the daemon over USB
+# serial, which carries key presses AND LED state.
+#
+# Set it True only as a fallback for when the daemon cannot see the pad's serial
+# port at all -- typically a locked-down machine where RDP COM port redirection
+# is unavailable. Because the pad is also a keyboard, RDP forwards these
+# keystrokes to the remote session and the daemon can pick them up as global
+# hotkeys with nothing installed on the local machine.
+#
+# It is input-only: a keyboard has no return path, so the LEDs stay on their
+# "disconnected" colour. Pair with `transport = "hid"` on the daemon.
+#
+#   F13-F20 -> session slots 0-7
+#   F21-F24 -> approve / interrupt / next attention / new session
+SEND_FUNCTION_KEYS = False
+
 # Global brightness scale applied to every colour, 0.0-1.0.
 BRIGHTNESS = 0.6
 

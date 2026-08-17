@@ -32,7 +32,7 @@ class FakeKey:
 
 
 class FakeKeyboard:
-    """Records press/release so we can assert the chord is balanced."""
+    """Records press/release/send so we can assert the chord is balanced."""
 
     def __init__(self, *_args):
         self.held = set()
@@ -45,6 +45,9 @@ class FakeKeyboard:
     def release(self, *keycodes):
         self.held.difference_update(keycodes)
         self.history.append(("release", keycodes))
+
+    def send(self, *keycodes):
+        self.history.append(("send", keycodes))
 
 
 def _install_stubs(monkeypatch):
@@ -75,6 +78,10 @@ def _install_stubs(monkeypatch):
         LEFT_GUI = "LEFT_GUI"
         LEFT_ALT = "LEFT_ALT"
         LEFT_SHIFT = "LEFT_SHIFT"
+
+    # Real HID usage codes for F13-F24, matching adafruit_hid.
+    for _n in range(13, 25):
+        setattr(Keycode, "F%d" % _n, 0x68 + (_n - 13))
 
     keycode_mod.Keycode = Keycode
     monkeypatch.setitem(sys.modules, "adafruit_hid", hid_pkg)
@@ -351,3 +358,66 @@ def test_key_events_carry_role_metadata(firmware):
     described = firmware._describe(action_key)
     assert described["role"] == "action"
     assert described["action"] == fw_config.ACTION_KEYS[action_key]
+
+
+# --- function-key fallback ------------------------------------------------
+# Used when the daemon cannot see the pad's serial port; the pad types F13-F24
+# and RDP carries the keystrokes into the remote session.
+
+
+def test_function_keys_off_by_default(firmware):
+    import config as fw_config
+
+    assert fw_config.SEND_FUNCTION_KEYS is False
+
+
+def test_session_slots_map_to_f13_upwards(firmware):
+    import config as fw_config
+
+    first = firmware._function_key_for(fw_config.SESSION_KEYS[0])
+    eighth = firmware._function_key_for(fw_config.SESSION_KEYS[7])
+    assert first == 0x68           # F13
+    assert eighth == 0x68 + 7      # F20
+
+
+def test_actions_continue_after_the_slots(firmware):
+    import config as fw_config
+
+    first_action = firmware._function_key_for(fw_config.ROWS[2][0])
+    last_action = firmware._function_key_for(fw_config.ROWS[2][3])
+    assert first_action == 0x68 + 8   # F21
+    assert last_action == 0x68 + 11   # F24
+
+
+def test_every_mapped_key_is_unique(firmware):
+    """Two keys sharing an F-key would silently trigger the wrong thing."""
+    import config as fw_config
+
+    keys = list(fw_config.SESSION_KEYS) + list(fw_config.ROWS[2])
+    codes = [firmware._function_key_for(k) for k in keys]
+    assert None not in codes
+    assert len(set(codes)) == len(codes)
+
+
+def test_dictation_and_free_keys_send_no_function_key(firmware):
+    import config as fw_config
+
+    assert firmware._function_key_for(fw_config.DICTATION_KEYS[0]) is None
+    assert firmware._function_key_for(fw_config.FREE_KEYS[0]) is None
+
+
+def test_no_keystroke_sent_when_disabled(firmware):
+    import config as fw_config
+
+    firmware._on_down(fw_config.SESSION_KEYS[0], 0.0)
+    sends = [e for e in firmware._test_keyboard.history if e[0] == "send"]
+    assert sends == []
+
+
+def test_keystroke_sent_when_enabled(firmware, monkeypatch):
+    import config as fw_config
+
+    monkeypatch.setattr(firmware, "_SEND_FKEYS", True)
+    firmware._on_down(fw_config.SESSION_KEYS[3], 0.0)
+    sends = [e for e in firmware._test_keyboard.history if e[0] == "send"]
+    assert sends == [("send", (0x68 + 3,))]

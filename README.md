@@ -87,109 +87,145 @@ This can span up to three machines, so it's worth being explicit:
 If the first two are the same machine, ignore this section — the default
 `transport = "serial"` just works.
 
-### Quickstart: Windows PC with the pad, RDP into a devbox
+### Quickstart: pad on your local machine, RDP into the devbox
 
-The common setup. Pad on the PC in front of you, Copilot app on the devbox.
+The common setup, and the one to try first. The pad stays plugged into the
+machine in front of you; RDP carries its COM port into the session.
 
-**On the devbox** (`~/.copilot/macropad.toml`):
+**In your RDP client**, before connecting:
 
-```toml
-[pad]
-transport   = "network"
-bridge_mode = "connect"
-bridge_host = "<your-PC-hostname-or-IP>"
-```
+> Show Options → Local Resources → More… → tick **Ports**
+
+(or `redirectcomports:i:1` in the `.rdp` file). No admin, nothing installed.
+Reconnect the session.
+
+**On the devbox:**
 
 ```powershell
 cd daemon
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe -m macropad_daemon --ports   # confirm the pad arrived
 .\scripts\install-hooks.ps1
-.\.venv\Scripts\python.exe -m macropad_daemon        # writes ~/.copilot/macropad.token
+.\.venv\Scripts\python.exe -m macropad_daemon
 ```
 
-**On the PC**, after flashing the pad:
+That's the whole thing — the default `transport = "serial"` treats a redirected
+port like any other, so LEDs and session keys both work. Dictation goes wherever
+the pad is plugged in, and RDP forwards the chord into the session, so it lands
+right either way.
 
-```powershell
-.\scripts\pad-bridge.ps1 -Listen -Token <token-from-that-file>
-```
-
-Nothing to install on the PC — `pad-bridge.ps1` uses only what ships with
-Windows. `bridge_mode = "connect"` has the devbox dial *out*, which works even
-when it can't accept inbound connections (Cloud PCs and gateway-fronted VMs
-usually can't).
-
-Dictation goes to the PC, since that's where the pad is plugged in. If your
-dictation tool runs on the devbox instead, RDP forwards the keystrokes there
-anyway — either way it works, with no extra setup.
+If `--ports` doesn't find the pad, it prints what to check. Fall back to
+[Option 2](#using-the-network-bridge) or the
+[keystroke fallback](#keystroke-fallback).
 
 ### Getting the daemon and the pad connected
 
 **Dictation works regardless, and needs nothing installed.** The pad is a USB
 HID keyboard, so it types Ctrl+Win into whatever it's plugged into, and RDP
-forwards keystrokes to the remote session like any other typing. If your
-dictation tool runs on the remote machine, the chord reaches it. This is the key
-you press most, and it has no dependency on anything below.
+forwards keystrokes to the remote session like any other typing.
 
-**LED state and focus-on-press need a data channel**, and that is a genuinely
-harder problem when the pad's machine is locked down.
+**For LED state and focus-on-press**, the daemon needs a two-way channel to the
+pad. In order of preference:
 
-**Option 1: pad's serial port is visible to the daemon.** Either the pad is
-plugged directly into the daemon machine, or its COM port is redirected into an
-RDP session (*Local Resources → More → Ports* in the client — a checkbox, not an
-install). Keep `transport = "serial"` and check with:
+**Option 1: RDP COM port redirection.** ⭐ *Start here if you RDP into the
+machine running the Copilot app.*
+
+CircuitPython's USB serial port enumerates under Windows' "Ports (COM & LPT)"
+class exactly like a physical serial port, and RDP redirects that class
+[bidirectionally](https://learn.microsoft.com/en-us/azure/virtual-desktop/redirection-remote-desktop-protocol).
+So the pad stays plugged into the machine in front of you, its COM port appears
+inside the session, and the daemon talks to it normally — **full functionality,
+LEDs included**.
+
+Enable it in the RDP client and reconnect:
+
+> Remote Desktop Connection → Show Options → Local Resources → More… → tick
+> **Ports**
+
+or add `redirectcomports:i:1` to your `.rdp` file. **Neither needs
+administrator rights or any software installed**, and on Windows 365 Cloud PCs
+COM ports are
+[redirected by default](https://learn.microsoft.com/en-us/azure/virtual-desktop/redirection-configure-serial-com-ports)
+on the session side.
+
+Then confirm it arrived:
 
 ```powershell
 python -m macropad_daemon --ports
 ```
 
-That lists every visible serial port, flags CircuitPython vendor ids, and probes
-each for the pad. **This is the only option that requires nothing whatsoever on
-the machine holding the pad**, so on a locked-down host it is the one that has
-to work. USB-CDC redirection is not always reliable, so test it early.
+Keep the default `transport = "serial"` — a redirected port is just a COM port,
+so nothing else changes.
 
 **Option 2: run a bridge on the pad's machine.** A small relay forwards the pad
-to the daemon over TCP. Two versions:
+to the daemon over TCP. `scripts/pad-bridge.ps1` needs only Windows PowerShell
+(which ships with Windows); `scripts/pad_bridge.py` needs Python and `pyserial`.
+Use this when the pad's machine can run something. See
+[Using the network bridge](#using-the-network-bridge).
 
-- `scripts/pad-bridge.ps1` — needs only Windows PowerShell, which ships with
-  Windows. Uses built-in .NET types, so there is **nothing to install**.
-- `scripts/pad_bridge.py` — same job, needs Python and `pyserial`.
-
-This is the right choice when you work on a machine you control and RDP into the
-machine running the Copilot app. See
-[Using the network bridge](#using-the-network-bridge) — and note that the daemon
-can dial *out* to the bridge, which matters when its own machine can't accept
-inbound connections.
+**Option 3: keystroke fallback (input only).** If neither of the above is
+available, the pad can drive the daemon by *typing* — see
+[Keystroke fallback](#keystroke-fallback). This gets you session switching and
+actions with nothing installed anywhere, but **no LED state**, because a
+keyboard has no return path.
 
 ### When the pad's machine can run nothing at all
 
-If the machine holding the pad permits no Python, no PowerShell, and no COM
-redirection, then **there is no way to drive the LEDs or focus sessions from
-it.** Worth stating plainly rather than half-trying workarounds:
+A locked-down machine that permits no installs and no PowerShell rules out both
+bridges. What's left:
 
-- Both bridges need *something* executable on that machine. Ruled out by
-  definition.
-- Keyboard LED state is not a usable back-channel. It is the one host→device
-  path a HID keyboard has, but
-  [RDP does not sync lock-key state back to the local keyboard](https://github.com/MicrosoftDocs/SupportArticles-docs/blob/main/support/windows-server/remote/caps-lock-key-status-not-synced-to-client.md)
-  — Microsoft documents this. The remote session's lock state never reaches the
-  physical device, so a pad on the client cannot learn anything from it.
-- Other RDP channels (clipboard, drive redirection) reach the *client machine*,
-  not a USB device attached to it, so they cannot carry state to the pad either.
+- **COM port redirection (Option 1) still works** — it's a client-side checkbox,
+  not software. This is the path to try, and it gives you everything.
+- **The keystroke fallback (Option 3) still works** — the pad is a keyboard, and
+  keyboards always work. Input only.
 
-**What to do instead: plug the pad into the machine running the Copilot app.**
-The daemon then talks to it directly over USB with `transport = "serial"` and
-everything works — LEDs, session keys, the lot.
+Ruled out, so you don't waste time on them:
 
-Over RDP that machine is the remote one, so this needs USB redirection at the
-hypervisor or RDP layer (Hyper-V enhanced session, VMware/Parallels USB
-passthrough, or a USB-over-IP appliance). Those attach the device to the remote
-machine rather than running software on the local one, which is why they're
-compatible with a locked-down client.
+- **Keyboard LED state as a back-channel.** It's the one host→device path a HID
+  keyboard has, but
+  [RDP does not sync lock-key state back to the client](https://learn.microsoft.com/en-us/troubleshoot/windows-server/remote/caps-lock-key-status-not-synced-to-client)
+  — the session uses an abstracted "Remote Desktop Keyboard Device" decoupled
+  from your physical keyboard's LEDs. No setting changes it.
+- **Writing state files to the CIRCUITPY drive.** Drive redirection can reach the
+  volume, but CircuitPython's running code
+  [cannot reliably see host writes without a remount or reset](https://learn.adafruit.com/customizing-usb-devices-in-circuitpython/circuitpy-midi-serial)
+  — the host and the device deliberately don't share a live filesystem view.
+  Windows 365 also disables drive redirection by default.
+- **RemoteFX USB redirection.** Requires a client-side Group Policy that needs
+  local admin. Worse, composite devices containing a mass-storage interface are
+  excluded by default — and the pad is exactly that.
+- **MIDI, smart card, WebAuthn, printer redirection.** Either not an RDP
+  redirection class at all (MIDI), or classes CircuitPython doesn't implement.
 
-Dictation is unaffected by that choice: the pad's Ctrl+Win chord goes to
-whichever machine it's attached to, and if your dictation tool runs on the
-remote machine, that is exactly where you want it.
+## Keystroke fallback
+
+Last resort, for when no data channel to the pad exists at all. The pad types
+**F13–F24** — real HID keycodes that no physical keyboard emits and essentially
+nothing binds — and the daemon picks them up as global hotkeys. RDP forwards
+them like any other typing.
+
+```
+F13-F20  ->  session slots 1-8
+F21-F24  ->  approve / interrupt / next attention / new session
+```
+
+On the pad, in `keybow/config.py`:
+
+```python
+SEND_FUNCTION_KEYS = True
+```
+
+On the daemon:
+
+```toml
+[pad]
+transport = "hid"
+```
+
+**This is input-only.** A keyboard has no return path, so slot LEDs stay on
+their dim "disconnected" colour — honest, rather than showing state that might
+be stale. Dictation is unaffected. If you want the LEDs, you need Option 1 or 2.
 
 ## Setup
 
