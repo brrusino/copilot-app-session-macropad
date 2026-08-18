@@ -215,6 +215,12 @@ class StateStore:
             if overlay.error:
                 return ERROR
 
+        # Asking outranks working, and must: a session sitting on a question
+        # still reports is_running, so letting working win meant a slot that was
+        # blocked on you showed as busy and you never knew it wanted an answer.
+        if session.asking:
+            return NEEDS_APPROVAL
+
         if self._is_working(session, overlay):
             return WORKING
 

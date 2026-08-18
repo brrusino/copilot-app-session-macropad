@@ -62,6 +62,12 @@ class PinnedSession:
     #: Whether this session approves tool use without asking. When it does, a
     #: ``permissionRequest`` hook never blocks on a human, so it must not be
     #: rendered as "needs approval".
+    #: Whether this session is waiting on you to answer something. Sourced from
+    #: the app's own activity feed rather than from hooks: ``permissionRequest``
+    #: fires on every tool call and cannot tell a real question apart from an
+    #: auto-approval, whereas the app records ``agent_asking`` only when the
+    #: agent actually stops to ask.
+    asking: bool = False
     auto_approve: bool = True
 
     @property
@@ -263,8 +269,14 @@ class CopilotDB:
                 every_descendant |= ids
             descendant_rows = self._fetch_workspaces(conn, every_descendant)
 
+            # Which sessions are currently stopped waiting on a human. Resolved
+            # for the pins and every descendant at once, so a parent can show
+            # that a subagent is blocked on you.
+            asking_sessions = self._asking_session_ids(conn)
+
         def rolled_up(pin: str, own_running: bool, own_unread: bool):
             running, has_unread = own_running, own_unread
+            asking = False
             for child in descendants.get(pin, ()):
                 row = descendant_rows.get(child)
                 if row is None or row["workspace_archived_at"] is not None:
@@ -273,7 +285,9 @@ class CopilotDB:
                     running = True
                 if child in unread:
                     has_unread = True
-            return running, has_unread
+                if row["session_id"] in asking_sessions:
+                    asking = True
+            return running, has_unread, asking
 
         resolved: list[PinnedSession] = []
         for pin in order:
@@ -286,7 +300,7 @@ class CopilotDB:
             if row is not None:
                 if row["workspace_archived_at"] is not None:
                     continue
-                running, has_unread = rolled_up(
+                running, has_unread, child_asking = rolled_up(
                     pin, bool(row["is_running"]), pin in unread
                 )
                 resolved.append(
@@ -298,6 +312,7 @@ class CopilotDB:
                         is_running=running,
                         unread=has_unread,
                         was_interrupted=bool(row["was_interrupted"]),
+                        asking=row["session_id"] in asking_sessions or child_asking,
                         auto_approve=bool(row["auto_approve"]),
                     )
                 )
@@ -315,10 +330,49 @@ class CopilotDB:
                     is_running=bool(session["is_running"]),
                     unread=pin in unread,
                     was_interrupted=bool(session["was_interrupted"]),
+                    asking=pin in asking_sessions,
                     auto_approve=bool(session["auto_approve"]),
                 )
             )
         return resolved
+
+    #: Activity types that mean "this session has stopped and wants you".
+    ASKING_ACTIVITY = ("agent_asking", "agent_plan_ready")
+
+    @classmethod
+    def _asking_session_ids(cls, conn: sqlite3.Connection) -> set[str]:
+        """Sessions whose most recent activity is a question for you.
+
+        Only the *latest* item counts. ``is_read`` is not usable here -- the app
+        leaves it 0 on essentially every row, so filtering on it would mark
+        every question ever asked as still outstanding. Comparing against the
+        newest item is self-clearing instead: once the agent moves on it writes
+        a newer item and the slot stops asking.
+
+        A missing table is tolerated: the feed is a newer addition to the app,
+        and an older database must still light the pad rather than fail.
+        """
+        try:
+            rows = conn.execute(
+                """
+                SELECT a.session_id AS session_id, a.activity_type AS activity_type
+                FROM activity_items AS a
+                JOIN (
+                    SELECT session_id, MAX(created_at) AS newest
+                    FROM activity_items
+                    GROUP BY session_id
+                ) AS latest
+                  ON latest.session_id = a.session_id
+                 AND latest.newest = a.created_at
+                """
+            ).fetchall()
+        except sqlite3.Error:
+            return set()
+        return {
+            row["session_id"]
+            for row in rows
+            if row["session_id"] and row["activity_type"] in cls.ASKING_ACTIVITY
+        }
 
     @staticmethod
     def _fetch_sessions(

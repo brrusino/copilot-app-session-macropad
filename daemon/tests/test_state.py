@@ -353,3 +353,17 @@ def test_read_session_settles_to_idle_after_it_stops():
     store.apply_snapshot([running], now=100.0)
     store.apply_snapshot([read_and_stopped], now=100.0 + WORKING_HOLD + 1)
     assert store.resolve(read_and_stopped) == IDLE
+
+def test_asking_outranks_working():
+    """A session sitting on a question still reports is_running.
+
+    Letting working win meant a slot blocked on you showed as busy, so you
+    never learned it wanted an answer.
+    """
+    store = StateStore(slot_count=2)
+    waiting = PinnedSession(
+        slot=0, workspace_id="w", session_id="s", name="n",
+        is_running=True, unread=False, was_interrupted=False, asking=True,
+    )
+    store.apply_snapshot([waiting], now=100.0)
+    assert store.resolve(waiting) == NEEDS_APPROVAL

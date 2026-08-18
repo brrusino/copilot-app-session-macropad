@@ -31,6 +31,17 @@ CREATE TABLE workspace_parent_links (
     creator_session_id TEXT,
     created_at TEXT
 );
+CREATE TABLE activity_items (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    session_id TEXT,
+    activity_type TEXT,
+    preview TEXT,
+    is_read INTEGER DEFAULT 0,
+    created_at TEXT,
+    updated_at TEXT,
+    metadata_json TEXT
+);
 """
 
 
@@ -42,11 +53,13 @@ def build_db(
     unread=(),
     children=(),
     sort_mode=None,
+    activity=(),
 ):
     """Build a fixture database.
 
     ``workspaces`` rows are ``(id, name, session_id, archived_at)`` with an
-    optional 5th ``updated_at`` element.
+    optional 5th ``updated_at`` element. ``activity`` rows are
+    ``(session_id, activity_type, created_at)``.
     """
     path = tmp_path / "data.db"
     conn = sqlite3.connect(path)
@@ -79,6 +92,11 @@ def build_db(
         " (child_workspace_id, parent_workspace_id, creator_session_id, created_at)"
         " VALUES (?,?,?,?)",
         [(c, "parent-ws", "parent-sess", "2026-01-01") for c in children],
+    )
+    conn.executemany(
+        "INSERT INTO activity_items (id, session_id, activity_type, created_at)"
+        " VALUES (?,?,?,?)",
+        [(f"a-{i}", s, t, ts) for i, (s, t, ts) in enumerate(activity)],
     )
     conn.commit()
     conn.close()
@@ -451,3 +469,59 @@ def test_focused_ids_matches_a_session_id_route(tmp_path):
 
 def test_focused_ids_is_empty_when_db_is_unreadable(tmp_path):
     assert CopilotDB(tmp_path / "missing.db").focused_ids() == set()
+
+def test_latest_activity_marks_a_session_as_asking(tmp_path):
+    """The app records agent_asking only when the agent really stops to ask."""
+    db = build_db(
+        tmp_path,
+        pins=["ws-1"],
+        workspaces=[("ws-1", "First", "s-1", None)],
+        sessions=[("s-1", "First session", 1, 0, None)],
+        activity=[("s-1", "agent_idle", "2026-01-01T00:00:00Z"),
+                  ("s-1", "agent_asking", "2026-01-01T01:00:00Z")],
+    )
+    assert db.pinned_sessions(4)[0].asking is True
+
+
+def test_an_answered_question_stops_asking(tmp_path):
+    """Only the newest item counts, so answering clears the slot by itself.
+
+    is_read cannot be used for this: the app leaves it 0 on essentially every
+    row, so every question ever asked would look outstanding forever.
+    """
+    db = build_db(
+        tmp_path,
+        pins=["ws-1"],
+        workspaces=[("ws-1", "First", "s-1", None)],
+        sessions=[("s-1", "First session", 1, 0, None)],
+        activity=[("s-1", "agent_asking", "2026-01-01T00:00:00Z"),
+                  ("s-1", "agent_idle", "2026-01-01T02:00:00Z")],
+    )
+    assert db.pinned_sessions(4)[0].asking is False
+
+
+def test_a_child_asking_surfaces_on_the_parent(tmp_path):
+    """A subagent blocked on you is still you being blocked."""
+    db = build_db(
+        tmp_path,
+        pins=["parent-ws"],
+        workspaces=[("parent-ws", "Parent", "s-p", None),
+                    ("kid-ws", "Kid", "s-k", None)],
+        sessions=[("s-p", "Parent session", 1, 0, None),
+                  ("s-k", "Kid session", 1, 0, None)],
+        children=["kid-ws"],
+        activity=[("s-k", "agent_asking", "2026-01-01T01:00:00Z")],
+    )
+    assert db.pinned_sessions(4)[0].asking is True
+
+
+def test_plan_ready_counts_as_asking(tmp_path):
+    """A plan awaiting approval is just as blocked as a question."""
+    db = build_db(
+        tmp_path,
+        pins=["ws-1"],
+        workspaces=[("ws-1", "First", "s-1", None)],
+        sessions=[("s-1", "First session", 1, 0, None)],
+        activity=[("s-1", "agent_plan_ready", "2026-01-01T01:00:00Z")],
+    )
+    assert db.pinned_sessions(4)[0].asking is True
