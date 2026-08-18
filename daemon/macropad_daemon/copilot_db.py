@@ -130,6 +130,8 @@ class CopilotDB:
 
         These are the app's child sessions; they are excluded so a key always
         addresses a top-level piece of work rather than a subagent's worktree.
+        Their *activity* is still rolled up into the parent -- see
+        :meth:`descendants_of`.
         """
         try:
             rows = conn.execute(
@@ -139,6 +141,43 @@ class CopilotDB:
             # Older schema without parent links: nothing is a child.
             return set()
         return {row[0] for row in rows if row[0]}
+
+    @staticmethod
+    def _child_map(conn: sqlite3.Connection) -> dict[str, list[str]]:
+        """parent workspace id -> direct children."""
+        mapping: dict[str, list[str]] = {}
+        try:
+            rows = conn.execute(
+                "SELECT parent_workspace_id, child_workspace_id"
+                " FROM workspace_parent_links"
+            )
+        except sqlite3.Error:
+            return mapping
+        for parent, child in rows:
+            if parent and child:
+                mapping.setdefault(parent, []).append(child)
+        return mapping
+
+    @classmethod
+    def descendants_of(
+        cls, child_map: dict[str, list[str]], root: str
+    ) -> set[str]:
+        """Every workspace beneath ``root``, at any depth.
+
+        Guards against cycles, which a corrupted or hand-edited link table
+        could otherwise turn into an infinite walk.
+        """
+        found: set[str] = set()
+        frontier = [root]
+        while frontier:
+            nxt: list[str] = []
+            for node in frontier:
+                for child in child_map.get(node, ()):
+                    if child not in found and child != root:
+                        found.add(child)
+                        nxt.append(child)
+            frontier = nxt
+        return found
 
     def unread_workspace_ids(self, conn: sqlite3.Connection) -> set[str]:
         blob = self._app_state(conn, UNREAD_KEY)
@@ -174,11 +213,37 @@ class CopilotDB:
                 return []
             unread = self.unread_workspace_ids(conn)
             children = self.child_workspace_ids(conn)
+            child_map = self._child_map(conn)
             rows = self._fetch_workspaces(conn, order)
             # Anything not matching a workspace may still be a pinned chat
             # session, which has no workspace of its own.
             unmatched = [pin for pin in order if pin not in rows]
             session_rows = self._fetch_sessions(conn, unmatched)
+
+            # A parent whose children are working IS working, so roll their
+            # activity up. Without this a session that has delegated all its
+            # work looks idle while its subagents run.
+            descendants = {
+                pin: self.descendants_of(child_map, pin)
+                for pin in order
+                if pin not in children
+            }
+            every_descendant = set()
+            for ids in descendants.values():
+                every_descendant |= ids
+            descendant_rows = self._fetch_workspaces(conn, every_descendant)
+
+        def rolled_up(pin: str, own_running: bool, own_unread: bool):
+            running, has_unread = own_running, own_unread
+            for child in descendants.get(pin, ()):
+                row = descendant_rows.get(child)
+                if row is None or row["workspace_archived_at"] is not None:
+                    continue
+                if row["is_running"]:
+                    running = True
+                if child in unread:
+                    has_unread = True
+            return running, has_unread
 
         resolved: list[PinnedSession] = []
         for pin in order:
@@ -191,14 +256,17 @@ class CopilotDB:
             if row is not None:
                 if row["workspace_archived_at"] is not None:
                     continue
+                running, has_unread = rolled_up(
+                    pin, bool(row["is_running"]), pin in unread
+                )
                 resolved.append(
                     PinnedSession(
                         slot=len(resolved),
                         workspace_id=pin,
                         session_id=row["session_id"],
                         name=row["workspace_name"] or row["session_title"] or "(untitled)",
-                        is_running=bool(row["is_running"]),
-                        unread=pin in unread,
+                        is_running=running,
+                        unread=has_unread,
                         was_interrupted=bool(row["was_interrupted"]),
                     )
                 )

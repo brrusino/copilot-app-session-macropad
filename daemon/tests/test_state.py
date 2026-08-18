@@ -128,15 +128,38 @@ def test_empty_session_id_is_ignored():
 
 
 # --- the conflict rule ----------------------------------------------------
-# More recent observation wins, whichever source it came from.
+# The database is authoritative for "still running". Hooks may only make us
+# react faster to work STARTING, never contradict the app into idle.
 
 
-def test_agent_stop_after_snapshot_beats_stale_is_running():
-    """A finished agent must not stay blue until the next poll."""
+def test_agent_stop_does_not_override_a_still_running_session():
+    """Regression test for the LED flapping blue/white once per agent turn.
+
+    agentStop fires at the end of every turn, but a session working through a
+    long task stays is_running across many turns. Measured on real hardware:
+    roughly one flip per turn while is_running never changed once in 45s.
+    """
     store = store_with(session(is_running=True), at=100.0)
     store.apply_hook("agentStop", "sess-a", now=101.0)
-    # Not working any more, and green because there is now output to read.
+    assert store.slot_states()[0] == WORKING
+
+
+def test_agent_stop_settles_once_the_app_agrees():
+    """When the app finally reports not-running, the turn's output is unread."""
+    store = store_with(session(is_running=True), at=100.0)
+    store.apply_hook("agentStop", "sess-a", now=101.0)
+    assert store.slot_states()[0] == WORKING
+    # The app records the finished turn: no longer running, output unread.
+    store.apply_snapshot([session(is_running=False, unread=True)], now=102.0)
     assert store.slot_states()[0] == UNREAD
+
+
+def test_app_saying_not_unread_is_believed():
+    """If the app cleared unread, you have read it -- do not keep showing green."""
+    store = store_with(session(is_running=True), at=100.0)
+    store.apply_hook("agentStop", "sess-a", now=101.0)
+    store.apply_snapshot([session(is_running=False, unread=False)], now=102.0)
+    assert store.slot_states()[0] == IDLE
 
 
 def test_snapshot_after_hook_beats_stale_hook():
@@ -152,6 +175,14 @@ def test_prompt_before_snapshot_catches_up():
     store = store_with(session(is_running=False), at=100.0)
     store.apply_hook("userPromptSubmitted", "sess-a", now=101.0)
     assert store.slot_states()[0] == WORKING
+
+
+def test_stale_working_hook_does_not_pin_the_slot():
+    """Once a newer snapshot disagrees, the database wins."""
+    store = StateStore()
+    store.apply_hook("userPromptSubmitted", "sess-a", now=99.0)
+    store.apply_snapshot([session(is_running=False)], now=100.0)
+    assert store.slot_states()[0] == IDLE
 
 
 def test_unread_hint_shows_green_before_database_agrees():

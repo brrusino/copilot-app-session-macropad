@@ -249,6 +249,98 @@ def test_missing_parent_links_table_is_tolerated(tmp_path):
     assert [r.workspace_id for r in db.pinned_sessions(8)] == ["ws-1"]
 
 
+# --- child activity roll-up ----------------------------------------------
+# A parent that has delegated its work to subagents is still working. Without
+# rolling their activity up, such a session looks idle while its children run.
+
+
+def build_family(tmp_path, child_running=0, child_unread=(), depth=1):
+    """A pinned parent with a child (optionally a grandchild)."""
+    links = [("ws-child", "ws-parent")]
+    workspaces = [
+        ("ws-parent", "Parent", "s-parent", None),
+        ("ws-child", "Child", "s-child", None),
+    ]
+    sessions = [
+        ("s-parent", "parent", 0, 0, None),
+        ("s-child", "child", child_running if depth == 1 else 0, 0, None),
+    ]
+    if depth > 1:
+        links.append(("ws-grand", "ws-child"))
+        workspaces.append(("ws-grand", "Grandchild", "s-grand", None))
+        sessions.append(("s-grand", "grand", child_running, 0, None))
+
+    path = tmp_path / "data.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(SCHEMA)
+    conn.execute(
+        "INSERT INTO app_state (key, value) VALUES (?, ?)",
+        (PINS_KEY, json.dumps({"state": {"pinnedWorkspaceIds": ["ws-parent"]}})),
+    )
+    conn.execute(
+        "INSERT INTO app_state (key, value) VALUES (?, ?)",
+        (UNREAD_KEY, json.dumps(list(child_unread))),
+    )
+    conn.executemany(
+        "INSERT INTO workspaces (id,name,session_id,archived_at,updated_at)"
+        " VALUES (?,?,?,?,NULL)",
+        workspaces,
+    )
+    conn.executemany(
+        "INSERT INTO sessions (id,title,is_running,was_interrupted,archived_at)"
+        " VALUES (?,?,?,?,?)",
+        sessions,
+    )
+    conn.executemany(
+        "INSERT INTO workspace_parent_links"
+        " (child_workspace_id,parent_workspace_id,creator_session_id,created_at)"
+        " VALUES (?,?,'s','2026-01-01')",
+        links,
+    )
+    conn.commit()
+    conn.close()
+    return CopilotDB(path)
+
+
+def test_running_child_makes_the_parent_working(tmp_path):
+    db = build_family(tmp_path, child_running=1)
+    rows = db.pinned_sessions(8)
+    assert len(rows) == 1
+    assert rows[0].name == "Parent"
+    assert rows[0].is_running is True
+
+
+def test_idle_children_leave_the_parent_idle(tmp_path):
+    db = build_family(tmp_path, child_running=0)
+    assert db.pinned_sessions(8)[0].is_running is False
+
+
+def test_unread_child_makes_the_parent_unread(tmp_path):
+    db = build_family(tmp_path, child_unread=["ws-child"])
+    assert db.pinned_sessions(8)[0].unread is True
+
+
+def test_rollup_reaches_grandchildren(tmp_path):
+    """Work delegated two levels down still counts."""
+    db = build_family(tmp_path, child_running=1, depth=2)
+    assert db.pinned_sessions(8)[0].is_running is True
+
+
+def test_archived_child_does_not_count(tmp_path):
+    db = build_family(tmp_path, child_running=1)
+    conn = sqlite3.connect(db.db_path)
+    conn.execute("UPDATE workspaces SET archived_at='2026-01-01' WHERE id='ws-child'")
+    conn.commit()
+    conn.close()
+    assert db.pinned_sessions(8)[0].is_running is False
+
+
+def test_descendant_walk_survives_a_cycle():
+    """A corrupted link table must not cause an infinite walk."""
+    cyclic = {"a": ["b"], "b": ["c"], "c": ["a"]}
+    assert CopilotDB.descendants_of(cyclic, "a") == {"b", "c"}
+
+
 # --- ordering -------------------------------------------------------------
 # Pins are drag-ordered, so their stored order IS the order on screen. Key N
 # must address the Nth pin the user sees.

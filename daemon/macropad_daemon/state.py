@@ -12,11 +12,15 @@ Neither source is sufficient alone:
 
 Conflict rule
 -------------
-When the two disagree about whether a session is *working*, the more recent
-observation wins: a hook event with a timestamp newer than the last database
-snapshot overrides that snapshot, and vice versa. This is what stops a finished
-agent from staying blue until the next poll, and stops a stale hook from pinning
-a slot to "working" forever.
+The database is authoritative for whether a session is *still running*; hooks
+may only make the pad react faster to work **starting**, never contradict the
+app into idle. ``agentStop`` fires at the end of every agent turn, but a session
+working through a long task stays ``is_running`` across many turns -- so letting
+the newer hook win made the LED flap blue/white once per turn while the app's
+own flag never changed at all.
+
+Everything hooks alone can see -- an approval prompt, an error, output you have
+not read yet -- is theirs outright, because the database has no equivalent.
 """
 
 from __future__ import annotations
@@ -180,12 +184,23 @@ class StateStore:
         return IDLE
 
     def _is_working(self, session: PinnedSession, overlay: SessionOverlay | None) -> bool:
-        if overlay is None or overlay.working_at == 0.0:
-            return session.is_running
-        # More recent observation wins.
-        if overlay.working_at >= self._snapshot_at:
-            return overlay.working
-        return session.is_running
+        """Whether a slot should show as working.
+
+        The database is **authoritative** for "still running"; hooks may only
+        make us react *faster* to work starting, never contradict the app into
+        idle. That asymmetry matters: ``agentStop`` fires at the end of every
+        agent turn, but a session mid-task stays ``is_running`` across turns.
+        Letting the newer hook win made the LED flap blue/white every few
+        seconds throughout a long task -- measured as roughly one flip per turn
+        while ``is_running`` never changed once in 45 seconds.
+        """
+        if session.is_running:
+            return True
+        if overlay is None:
+            return False
+        # A hook saw work start more recently than our last snapshot, so the
+        # database simply has not caught up yet.
+        return overlay.working and overlay.working_at >= self._snapshot_at
 
     def _unread_hinted(self, overlay: SessionOverlay | None) -> bool:
         if overlay is None or not overlay.unread_hint:

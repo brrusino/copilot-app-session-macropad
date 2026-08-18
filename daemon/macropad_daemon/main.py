@@ -22,6 +22,7 @@ import json
 import logging
 import sys
 import time
+from logging.handlers import RotatingFileHandler
 
 from . import config as config_module
 from . import actions, hooks_install
@@ -358,16 +359,32 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--print-hooks", action="store_true", help="print hook config JSON")
     parser.add_argument("--install-hooks", action="store_true", help="write the hook config")
     parser.add_argument("--verbose", "-v", action="store_true")
+    parser.add_argument(
+        "--log-file",
+        help="append logs to this file instead of the console "
+        "(used when running at startup, where there is no console)",
+    )
     args = parser.parse_args(argv)
 
     from pathlib import Path
 
     cfg = config_module.load(Path(args.config) if args.config else None)
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else getattr(logging, cfg.log_level, logging.INFO),
-        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    )
+
+    level = logging.DEBUG if args.verbose else getattr(logging, cfg.log_level, logging.INFO)
+    log_format = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
+    date_format = "%Y-%m-%d %H:%M:%S" if args.log_file else "%H:%M:%S"
+
+    if args.log_file:
+        log_path = Path(args.log_file).expanduser()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        # Rotate rather than growing without bound: this runs for weeks.
+        handler = RotatingFileHandler(
+            log_path, maxBytes=1_000_000, backupCount=3, encoding="utf-8"
+        )
+        handler.setFormatter(logging.Formatter(log_format, datefmt=date_format))
+        logging.basicConfig(level=level, handlers=[handler])
+    else:
+        logging.basicConfig(level=level, format=log_format, datefmt=date_format)
 
     if args.print_hooks:
         print(json.dumps(hooks_install.build_config(cfg), indent=2))
