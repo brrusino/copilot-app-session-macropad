@@ -165,11 +165,13 @@ _slot_state = ["empty"] * SLOT_COUNT
 _action_flash = {}
 _ACTION_FLASH_SECS = 0.18
 
-#: Momentary white flash confirming a session key press. Held longer than the
-#: action flash because the app can take several seconds to navigate, and
-#: without visible acknowledgement the pad looks like it ignored the press.
+#: Keys currently showing a "press registered" pulse, and when it expires.
+#: A fixed duration cannot be right here: focusing a session takes seconds and
+#: varies, so the host clears this explicitly when the app has actually
+#: navigated. The expiry is only a failsafe for a host that never replies.
 _press_flash = {}
-_PRESS_FLASH_SECS = 0.45
+_PRESS_FLASH_MAX = 12.0
+_PRESS_PULSE_PERIOD = 0.5
 
 # Dictation chord hold refcount. The chord engages when the first of the two
 # keys goes down and releases only when the last one comes up, so rolling off
@@ -233,6 +235,17 @@ def _handle_message(msg):
                 _slot_state[i] = values[i]
         return
 
+    if kind == "busy_done":
+        # The host finished acting on a key press, so stop the pulse. Sent
+        # once the app has actually navigated, which is the only thing that
+        # knows how long that took.
+        slot = msg.get("k")
+        if slot is None:
+            _press_flash.clear()
+        elif isinstance(slot, int) and 0 <= slot < SLOT_COUNT:
+            _press_flash.pop(config.SESSION_KEYS[slot], None)
+        return
+
     if kind == "palette":
         for name, spec in (msg.get("v") or {}).items():
             try:
@@ -276,7 +289,10 @@ def _resolve(key_number, now, connected):
         name = "action_active" if _action_flash.get(key_number, 0) > now else "action"
     elif key_number in config.SESSION_KEYS:
         if _press_flash.get(key_number, 0) > now:
-            name = "pressed"
+            # Blink white for as long as the navigation is in flight, so the
+            # pad visibly stays busy rather than going quiet mid-operation.
+            phase = (now % _PRESS_PULSE_PERIOD) / _PRESS_PULSE_PERIOD
+            name = "pressed" if phase < 0.5 else "empty"
         elif not connected:
             name = "disconnected"
         else:
@@ -322,8 +338,10 @@ def _on_down(key_number, now):
     elif key_number in config.ACTION_KEYS:
         _action_flash[key_number] = now + _ACTION_FLASH_SECS
     elif key_number in config.SESSION_KEYS:
-        # Acknowledge immediately; the daemon's response is seconds away.
-        _press_flash[key_number] = now + _PRESS_FLASH_SECS
+        # Pulse until the host says the app has actually navigated. Focusing a
+        # session takes several seconds, and a brief blip leaves you unsure
+        # whether the press registered at all.
+        _press_flash[key_number] = now + _PRESS_FLASH_MAX
 
     if _SEND_FKEYS:
         keycode = _function_key_for(key_number)

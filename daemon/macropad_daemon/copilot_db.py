@@ -119,6 +119,32 @@ class CopilotDB:
         pinned = (blob.get("state") or {}).get("pinnedWorkspaceIds") or []
         return [w for w in pinned if isinstance(w, str)]
 
+    def focused_ids(self) -> set[str]:
+        """Identifiers of whatever the app currently has open.
+
+        Used to tell when a deep-link navigation has actually landed. Both the
+        active workspace and the raw route are included because a pin may be a
+        workspace id *or* a session id -- chat sessions have no workspace, so
+        matching on workspace alone would never resolve for them.
+        """
+        found: set[str] = set()
+        try:
+            with self._connect() as conn:
+                for key in ("activeWorkspaceId", "lastRoutePath"):
+                    row = conn.execute(
+                        "SELECT value FROM app_state WHERE key = ?", (key,)
+                    ).fetchone()
+                    if not row or not row["value"]:
+                        continue
+                    raw = str(row["value"]).strip().strip('"')
+                    found.add(raw)
+                    # The route is a path; its last segment is the id.
+                    if "/" in raw:
+                        found.add(raw.rsplit("/", 1)[-1])
+        except sqlite3.Error:
+            return found
+        return found
+
     def sort_mode(self, conn: sqlite3.Connection) -> str:
         """The app's own workspace sort mode, e.g. ``activity``.
 

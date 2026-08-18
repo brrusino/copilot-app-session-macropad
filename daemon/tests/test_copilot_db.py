@@ -413,3 +413,41 @@ def test_pin_matching_nothing_is_skipped(tmp_path):
         sessions=[("s-1", "a", 0, 0, None)],
     )
     assert [r.name for r in db.pinned_sessions(8)] == ["First"]
+
+def test_focused_ids_reports_active_workspace_and_route(tmp_path):
+    """Used to tell when a deep-link navigation actually landed."""
+    db_path = tmp_path / "data.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT)")
+    conn.executemany(
+        "INSERT INTO app_state (key, value) VALUES (?, ?)",
+        [
+            ("activeWorkspaceId", "ws-123"),
+            ("lastRoutePath", "/workspaces/ws-123"),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+    ids = CopilotDB(db_path).focused_ids()
+    assert "ws-123" in ids
+    assert "/workspaces/ws-123" in ids
+
+
+def test_focused_ids_matches_a_session_id_route(tmp_path):
+    """Chat sessions have no workspace, so the route is the only signal."""
+    db_path = tmp_path / "data.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute(
+        "INSERT INTO app_state (key, value) VALUES (?, ?)",
+        ("lastRoutePath", "/sessions/sess-abc"),
+    )
+    conn.commit()
+    conn.close()
+
+    assert "sess-abc" in CopilotDB(db_path).focused_ids()
+
+
+def test_focused_ids_is_empty_when_db_is_unreadable(tmp_path):
+    assert CopilotDB(tmp_path / "missing.db").focused_ids() == set()

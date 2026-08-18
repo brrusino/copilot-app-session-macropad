@@ -38,6 +38,11 @@ RECONNECT_DELAY = 2.0
 #: before trying to restart its firmware over the console port.
 SILENT_PAD_TIMEOUT = 4.0
 
+#: How long a pad that HAS been talking may go quiet before we restart it.
+#: The firmware heartbeats every 2s, so silence well past that means it died or
+#: was interrupted into the REPL. Generous enough to absorb a slow RDP link.
+STALLED_PAD_TIMEOUT = 15.0
+
 #: CircuitPython's REPL: Ctrl-C interrupts, Ctrl-D reloads code.py.
 REPL_RELOAD = b"\x04"
 
@@ -114,8 +119,20 @@ def candidate_ports() -> list[str]:
     return redirected + [i.device for i in others]
 
 
-def probe(port: str, baud: int, timeout: float = PROBE_TIMEOUT) -> bool:
-    """True if ``port`` is the pad's *data* port.
+#: Outcomes of probing a candidate port. A busy port must be distinguished from
+#: an absent one: they look identical to a bool-returning probe, but they need
+#: opposite responses from the user ("free the port" vs "plug the pad in").
+PROBE_PAD = "pad"
+PROBE_SILENT = "silent"
+PROBE_BUSY = "busy"
+
+
+def _is_access_denied(exc: BaseException) -> bool:
+    return "Access is denied" in str(exc) or getattr(exc, "errno", None) == 13
+
+
+def probe_port(port: str, baud: int, timeout: float = PROBE_TIMEOUT) -> str:
+    """Classify ``port`` as the pad, silent, or busy.
 
     Deliberately writes nothing. The firmware emits an unsolicited heartbeat
     every couple of seconds, so listening alone is sufficient -- and writing
@@ -144,7 +161,7 @@ def probe(port: str, baud: int, timeout: float = PROBE_TIMEOUT) -> bool:
                 try:
                     waiting = handle.in_waiting
                 except (OSError, serial.SerialException):
-                    return False
+                    return PROBE_SILENT
                 if not waiting:
                     time.sleep(0.05)
                     continue
@@ -156,10 +173,15 @@ def probe(port: str, baud: int, timeout: float = PROBE_TIMEOUT) -> bool:
                     except (ValueError, UnicodeDecodeError):
                         continue
                     if isinstance(message, dict) and message.get("t") in ("hb", "hello"):
-                        return True
-    except (serial.SerialException, OSError):
-        return False
-    return False
+                        return PROBE_PAD
+    except (serial.SerialException, OSError) as exc:
+        return PROBE_BUSY if _is_access_denied(exc) else PROBE_SILENT
+    return PROBE_SILENT
+
+
+def probe(port: str, baud: int, timeout: float = PROBE_TIMEOUT) -> bool:
+    """True if ``port`` is the pad's *data* port."""
+    return probe_port(port, baud, timeout) == PROBE_PAD
 
 
 class SerialLink:
@@ -179,6 +201,7 @@ class SerialLink:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._on_connect: Callable[[], None] | None = None
+        self._busy_ports: list[str] = []
 
     # -- lifecycle -------------------------------------------------------
 
@@ -237,12 +260,19 @@ class SerialLink:
             # user says "stop guessing", so honour it and let the read loop
             # handle a port that turns out to be wrong.
             return self._configured_port
+        self._busy_ports = []
         for port in candidate_ports():
             if self._stop.is_set():
                 return None
             log.debug("probing %s", port)
-            if probe(port, self._baud):
+            outcome = probe_port(port, self._baud)
+            if outcome == PROBE_PAD:
                 return port
+            if outcome == PROBE_BUSY:
+                # Record rather than ignore: a busy port is the single most
+                # likely reason the pad is present but unreachable, and calling
+                # it "not found" sends the user looking for the wrong problem.
+                self._busy_ports.append(port)
         return None
 
     def _run(self) -> None:
@@ -250,9 +280,21 @@ class SerialLink:
         while not self._stop.is_set():
             port = self._discover()
             if port is None:
-                # Say this once, not every retry: an unplugged pad is a normal
-                # state to sit in for hours and it must not drown the log.
-                if not announced_missing:
+                if self._busy_ports:
+                    # Re-announce this one on every retry. Unlike an absent pad,
+                    # a wedged port never clears itself, so staying quiet about
+                    # it just leaves the pad looking broken.
+                    log.warning(
+                        "%s open but busy; the pad cannot be reached. Another "
+                        "process may hold it, or the RDP COM redirection wedged "
+                        "(a process died holding it). Replug the pad, or "
+                        "reconnect the RDP session, to reset it.",
+                        ", ".join(self._busy_ports),
+                    )
+                    announced_missing = False
+                elif not announced_missing:
+                    # Say this once, not every retry: an unplugged pad is a normal
+                    # state to sit in for hours and it must not drown the log.
                     log.info("keybow not found; waiting for it to appear")
                     announced_missing = True
                 else:
@@ -335,6 +377,7 @@ class SerialLink:
         handle = self._serial
         buffer = b""
         started = time.monotonic()
+        last_heard = started
         heard_anything = False
         kicked = False
 
@@ -349,16 +392,24 @@ class SerialLink:
                 # buffered avoids the overlapped-IO path entirely.
                 waiting = handle.in_waiting
                 if not waiting:
-                    if (
-                        not heard_anything
-                        and not kicked
-                        and (time.monotonic() - started) > SILENT_PAD_TIMEOUT
-                    ):
+                    now = time.monotonic()
+                    if not heard_anything and not kicked and (now - started) > SILENT_PAD_TIMEOUT:
                         # The port is open but the pad has said nothing. It is
                         # most likely parked at the REPL; restart its firmware
                         # now that we already hold the data port.
                         kicked = True
                         log.info("pad is silent; trying to restart its firmware")
+                        self._kick_console(handle.port)
+                    elif heard_anything and (now - last_heard) > STALLED_PAD_TIMEOUT:
+                        # It was talking and stopped. The firmware has died or
+                        # been interrupted into the REPL -- the link itself is
+                        # fine, so reconnecting would not help and the pad would
+                        # stay dark indefinitely. Restart it in place.
+                        log.info(
+                            "pad stopped sending for %.0fs; restarting its firmware",
+                            now - last_heard,
+                        )
+                        last_heard = now
                         self._kick_console(handle.port)
                     time.sleep(0.02)
                     continue
@@ -368,6 +419,7 @@ class SerialLink:
             if not chunk:
                 continue
             heard_anything = True
+            last_heard = time.monotonic()
             buffer += chunk
             while b"\n" in buffer:
                 raw, _, buffer = buffer.partition(b"\n")

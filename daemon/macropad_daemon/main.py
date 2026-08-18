@@ -21,6 +21,7 @@ import argparse
 import json
 import logging
 import sys
+import threading
 import time
 from logging.handlers import RotatingFileHandler
 
@@ -31,6 +32,12 @@ from .hook_server import PortInUseError
 from .state import StateStore
 
 log = logging.getLogger("macropad")
+
+#: How long to keep the pad's press pulse running while waiting for the app to
+#: focus a session. Derived from measurement, not taste: focusing was timed at
+#: ~4.5s on this machine, so this leaves generous headroom while still
+#: guaranteeing the pulse ends if navigation silently fails.
+NAVIGATION_TIMEOUT = 12.0
 
 
 class Daemon:
@@ -137,10 +144,38 @@ class Daemon:
         session = self.store.session_for_slot(slot)
         if session is None or not session.focusable:
             log.info("slot %s has no session to focus", slot)
+            self.link.send({"t": "busy_done", "k": slot})
             return
         self._last_session_slot = slot
         log.info("focus slot %s -> %s", slot, session.name)
         actions.focus_session(session.session_id or "")
+        # The pad pulses white until told the navigation landed. Watch for it
+        # off-thread so the key/LED path is never blocked by a slow app.
+        threading.Thread(
+            target=self._await_navigation,
+            args=(slot, session),
+            name="macropad-nav",
+            daemon=True,
+        ).start()
+
+    def _await_navigation(self, slot: int, session) -> None:
+        """Clear the pad's busy pulse once the app has actually navigated.
+
+        Focusing takes several seconds and the duration varies, so the pad
+        cannot guess it. Poll the app's own focus state until it matches, and
+        give up after a bounded wait so a failed navigation still clears the
+        pulse rather than blinking forever.
+        """
+        targets = {t for t in (session.workspace_id, session.session_id) if t}
+        deadline = time.monotonic() + NAVIGATION_TIMEOUT
+        while time.monotonic() < deadline:
+            time.sleep(0.15)
+            if targets & self.db.focused_ids():
+                log.info("slot %s focused", slot)
+                break
+        else:
+            log.warning("slot %s did not appear to focus within %.0fs", slot, NAVIGATION_TIMEOUT)
+        self.link.send({"t": "busy_done", "k": slot})
 
     def _run_action(self, name: str) -> None:
         log.info("action %s", name)
@@ -231,7 +266,14 @@ class Daemon:
 
         try:
             while True:
-                self.reconcile()
+                try:
+                    self.reconcile()
+                except Exception:
+                    # A transient read failure must not take the daemon down.
+                    # Dying here is what makes the pad go dead with no
+                    # explanation: under pythonw there is no console, so the
+                    # traceback would otherwise be lost entirely.
+                    log.exception("reconcile failed; continuing")
                 # Heartbeat so the pad knows we are alive even when nothing
                 # changed; without it the LEDs fall back to "disconnected".
                 self.link.send({"t": "hb"})
@@ -239,6 +281,9 @@ class Daemon:
         except KeyboardInterrupt:
             log.info("shutting down")
             return 0
+        except Exception:
+            log.exception("daemon stopped on an unhandled error")
+            return 4
         finally:
             self.link.stop()
             self.hooks.stop()
@@ -311,8 +356,10 @@ def _print_ports() -> int:
 
         from .serial_link import (
             CIRCUITPYTHON_VIDS,
+            PROBE_BUSY,
+            PROBE_PAD,
             candidate_ports,
-            probe,
+            probe_port,
             registry_ports,
         )
     except ImportError:
@@ -345,18 +392,34 @@ def _print_ports() -> int:
 
     print()
     print("Probing for the pad (each candidate gets a few seconds)...")
+    busy: list[str] = []
     for port in candidate_ports():
-        if probe(port, 115200):
+        outcome = probe_port(port, 115200)
+        if outcome == PROBE_PAD:
             print(f"  FOUND: {port} speaks the macropad protocol")
             print()
             print(f'Set [serial] port = "{port}" to skip discovery, or leave it')
             print("unset and the daemon will find it the same way.")
             return 0
-        print(f"  {port}: no response")
+        if outcome == PROBE_BUSY:
+            busy.append(port)
+            print(f"  {port}: BUSY (access denied)")
+        else:
+            print(f"  {port}: no response")
 
     print()
     print("No port answered.")
     print()
+    if busy:
+        print(f"{', '.join(busy)} could not be opened at all -- something already")
+        print("holds it. That is almost certainly why the pad is unreachable.")
+        print()
+        print("With an RDP-redirected port this usually means the redirection")
+        print("wedged because a process was killed while holding the port open.")
+        print("It does not clear on its own. Either:")
+        print("  - unplug and replug the pad on your local machine, or")
+        print("  - disconnect and reconnect the RDP session.")
+        print()
     print("If the pad is plugged into THIS machine, check that you replugged it")
     print("after the first firmware install so boot.py could enable the USB")
     print("serial data port.")

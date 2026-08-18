@@ -179,3 +179,39 @@ def test_probe_returns_false_when_port_cannot_open(monkeypatch):
 
     monkeypatch.setattr(serial_link.serial, "Serial", boom)
     assert serial_link.probe("COM9", 115200) is False
+
+def test_probe_reports_busy_when_access_is_denied(monkeypatch):
+    """A port held by someone else must not be reported as "no pad".
+
+    Regression test for a real failure: force-killing the daemon left the
+    RDP COM redirection wedged, so every open returned "Access is denied".
+    Discovery classified that as absent and logged "keybow not found", which
+    sends you looking for an unplugged pad instead of a stuck port.
+    """
+
+    def boom(*a, **k):
+        raise serial_link.serial.SerialException(
+            "could not open port 'COM4': PermissionError(13, 'Access is denied.', None, 5)"
+        )
+
+    monkeypatch.setattr(serial_link.serial, "Serial", boom)
+    assert serial_link.probe_port("COM4", 115200) == serial_link.PROBE_BUSY
+
+
+def test_probe_reports_silent_for_an_ordinary_open_failure(monkeypatch):
+    def boom(*a, **k):
+        raise serial_link.serial.SerialException("nope")
+
+    monkeypatch.setattr(serial_link.serial, "Serial", boom)
+    assert serial_link.probe_port("COM9", 115200) == serial_link.PROBE_SILENT
+
+
+def test_discovery_records_busy_ports(monkeypatch):
+    """The busy port has to reach the operator, not be swallowed by discovery."""
+    monkeypatch.setattr(serial_link, "candidate_ports", lambda: ["COM4"])
+    monkeypatch.setattr(
+        serial_link, "probe_port", lambda *a, **k: serial_link.PROBE_BUSY
+    )
+    link = serial_link.SerialLink(on_event=lambda _e: None)
+    assert link._discover() is None
+    assert link._busy_ports == ["COM4"]
