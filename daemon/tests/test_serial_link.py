@@ -29,8 +29,9 @@ def test_unrelated_ports_skipped_when_a_board_matches(fake_ports):
     assert serial_link.candidate_ports() == ["COM7"]
 
 
-def test_falls_back_to_everything_when_no_vendor_matches(fake_ports):
+def test_falls_back_to_everything_when_no_vendor_matches(fake_ports, monkeypatch):
     """An unexpected vendor id must not make the pad undiscoverable."""
+    monkeypatch.setattr(serial_link, "registry_ports", lambda: [])
     fake_ports([port("COM2"), port("COM3")])
     assert serial_link.candidate_ports() == ["COM2", "COM3"]
 

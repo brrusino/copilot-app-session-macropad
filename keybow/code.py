@@ -363,10 +363,14 @@ def main():
         time.sleep(0.005)
 
 
-if __name__ == "__main__":
-    # CircuitPython runs code.py as __main__, so this executes on-device while
-    # still letting the host test suite import the module and exercise the
-    # dictation refcount and LED resolution without a board attached.
+# Run the firmware, unless a host-side test harness has asked us not to.
+#
+# CircuitPython does NOT execute code.py with __name__ == "__main__" -- it uses
+# the module's own name -- so guarding on that silently skips main(). The pad
+# then appears to boot, do nothing, and drop to the REPL with no error at all,
+# which is a genuinely confusing failure. Test harnesses set _TEST_IMPORT on the
+# config module instead; that attribute never exists on the device.
+if not getattr(config, "_TEST_IMPORT", False):
     try:
         main()
     finally:

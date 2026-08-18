@@ -115,6 +115,12 @@ def firmware(monkeypatch):
     for name in ("code", "config"):
         sys.modules.pop(name, None)
 
+    # code.py calls main() on import -- that is exactly what must happen on the
+    # device. Flag the config module so the entry point is skipped here instead.
+    import config as fw_config
+
+    fw_config._TEST_IMPORT = True
+
     spec = importlib.util.spec_from_file_location("code", FIRMWARE_DIR / "code.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -122,6 +128,24 @@ def firmware(monkeypatch):
     yield module
     for name in ("code", "config"):
         sys.modules.pop(name, None)
+
+
+def test_entry_point_is_not_guarded_on_dunder_name():
+    """Regression test for a bug that made the pad silently do nothing.
+
+    CircuitPython does not run code.py with __name__ == "__main__", so an
+    `if __name__ == "__main__":` guard skips main() entirely. The pad boots,
+    prints no error, and drops to the REPL -- with the LEDs frozen on whatever
+    was set last, which looks like working hardware.
+    """
+    source = (FIRMWARE_DIR / "code.py").read_text(encoding="utf-8")
+    # Ignore comments: the explanation of this bug naturally mentions the guard.
+    code_lines = [
+        line for line in source.splitlines() if not line.lstrip().startswith("#")
+    ]
+    body = "\n".join(code_lines)
+    assert "__main__" not in body
+    assert "_TEST_IMPORT" in body
 
 
 # --- layout ---------------------------------------------------------------
