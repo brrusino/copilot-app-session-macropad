@@ -58,20 +58,6 @@ def test_bridge_mode_is_case_insensitive(tmp_path):
     assert config_module.load(path).bridge_mode == "connect"
 
 
-def test_action_bindings_override(tmp_path):
-    path = write(
-        tmp_path,
-        """
-        [actions]
-        interrupt = "ctrl+c"
-        new_session = "ctrl+shift+n"
-        """,
-    )
-    cfg = config_module.load(path)
-    assert cfg.actions.interrupt == "ctrl+c"
-    assert cfg.actions.new_session == "ctrl+shift+n"
-
-
 def test_led_overrides(tmp_path):
     path = write(
         tmp_path,

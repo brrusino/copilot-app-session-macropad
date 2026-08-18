@@ -27,7 +27,6 @@ from logging.handlers import RotatingFileHandler
 
 from . import config as config_module
 from . import actions, hooks_install
-from . import state as state_module
 from .copilot_db import CopilotDB
 from .hook_server import PortInUseError
 from .state import StateStore
@@ -59,7 +58,6 @@ class Daemon:
         #: Session key most recently pressed, used to target actions that need
         #: a subject (interrupt) without guessing.
         self._last_session_slot: int | None = None
-        self._last_attention_slot: int | None = None
         #: Pad protocol version, learned from its hello or heartbeat.
         self._pad_firmware: int | None = None
         #: Whether the app was frontmost at the last check, so the pad is only
@@ -259,44 +257,44 @@ class Daemon:
                 return slot
         return None
 
+    def _step_session(self, delta: int) -> None:
+        """Move to the neighbouring pinned session.
+
+        Needs no shortcut of its own: the pad's keys already *are* the pinned
+        list, so stepping is just working out the neighbouring slot and typing
+        its Ctrl+<n>. Empty slots are skipped, and the ends wrap, because this
+        is a key you press repeatedly to walk the list.
+        """
+        occupied = [
+            slot
+            for slot in range(self.cfg.slot_count)
+            if (s := self.store.session_for_slot(slot)) is not None and s.focusable
+        ]
+        if not occupied:
+            log.info("no pinned sessions to step through")
+            return
+
+        anchor = self._focused_slot()
+        if anchor is None:
+            anchor = self._last_session_slot
+        if anchor is None or anchor not in occupied:
+            # Nothing to step from, so start at whichever end you are heading
+            # towards rather than refusing to move at all.
+            target = occupied[0] if delta > 0 else occupied[-1]
+        else:
+            target = occupied[(occupied.index(anchor) + delta) % len(occupied)]
+
+        self._switch_to(target)
+
     def _run_action(self, name: str) -> None:
         log.info("action %s", name)
 
-        if name == "next_attention":
-            slot = self.store.next_attention_slot(after=self._last_attention_slot)
-            if slot is None:
-                log.info("nothing needs attention")
-                return
-            self._last_attention_slot = slot
-            self._switch_to(slot)
+        if name == "previous_session":
+            self._step_session(-1)
             return
 
-        # interrupt acts on the session **in front of you**, and never
-        # navigates.
-        #
-        # Switching and acting on one press means acting on a session you have
-        # not looked at -- stopping work you cannot see. Navigation is what the
-        # next-attention key is for: press it to reach the session that wants
-        # you, read it, then act.
-        #
-        # Approving is not here at all: it is the Enter key on row 4, typed
-        # straight into whatever you are looking at. Having the daemon find a
-        # session to approve meant confirming a prompt you had not read.
-        if name == "interrupt":
-            slot = self._focused_slot()
-            if slot is None:
-                log.info("interrupt: the app is not on one of the pad's sessions")
-                return
-            session = self.store.session_for_slot(slot)
-            state = self.store.resolve(session)
-            if state != state_module.WORKING:
-                log.info("interrupt: %s is not working (%s)", session.name, state)
-                return
-            self._type_chord(self.cfg.actions.interrupt)
-            return
-
-        if name == "new_session":
-            self._type_chord(self.cfg.actions.new_session)
+        if name == "next_session":
+            self._step_session(1)
             return
 
         log.warning("unknown action %r", name)

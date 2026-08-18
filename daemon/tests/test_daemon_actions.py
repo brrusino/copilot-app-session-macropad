@@ -61,49 +61,60 @@ def session(slot: int, **kwargs) -> PinnedSession:
     )
 
 
-def test_new_session_is_typed_by_the_pad(daemon):
-    daemon._run_action("new_session")
-    assert daemon.link.sent == [{"t": "type", "v": daemon.cfg.actions.new_session}]
-
-
-def test_interrupt_acts_on_the_focused_session_without_navigating(daemon, monkeypatch):
-    """Row 3 acts on the session in front of you.
-
-    Switching and acting on one press means acting on a session you have not
-    looked at -- stopping work you cannot see, or approving a prompt you have
-    not read. Navigation is what the next-attention key is for.
-    """
-    daemon.store.apply_snapshot([session(0, is_running=True), session(1, is_running=True)])
-    monkeypatch.setattr(daemon.db, "focused_ids", lambda: {"s-1"})
-
-    daemon._run_action("interrupt")
-
-    assert daemon.link.sent == [{"t": "type", "v": daemon.cfg.actions.interrupt}]
-
-
-def test_interrupt_does_nothing_when_the_session_is_not_working(daemon, monkeypatch):
-    daemon.store.apply_snapshot([session(0)])
+def test_next_session_steps_forward_through_the_pinned_list(daemon, monkeypatch):
+    """Needs no shortcut of its own: the pad's keys already are the pinned
+    list, so stepping is working out the neighbour and typing its Ctrl+<n>."""
+    daemon.store.apply_snapshot([session(0), session(1), session(2)])
     monkeypatch.setattr(daemon.db, "focused_ids", lambda: {"s-0"})
 
-    daemon._run_action("interrupt")
+    daemon._run_action("next_session")
 
-    assert daemon.link.sent == []
-
-
-def test_nothing_happens_when_the_app_is_not_on_a_pad_session(daemon, monkeypatch):
-    daemon.store.apply_snapshot([session(0, is_running=True)])
-    monkeypatch.setattr(daemon.db, "focused_ids", lambda: {"some-other-session"})
-
-    daemon._run_action("interrupt")
-
-    assert daemon.link.sent == []
+    assert daemon.link.sent == [{"t": "type", "v": "ctrl+2"}]
 
 
-def test_next_attention_switches_through_the_pad(daemon):
-    daemon.store.apply_snapshot([session(0), session(1, unread=True)])
+def test_previous_session_steps_back(daemon, monkeypatch):
+    daemon.store.apply_snapshot([session(0), session(1), session(2)])
+    monkeypatch.setattr(daemon.db, "focused_ids", lambda: {"s-2"})
 
-    daemon._run_action("next_attention")
+    daemon._run_action("previous_session")
 
+    assert daemon.link.sent == [{"t": "type", "v": "ctrl+2"}]
+
+
+def test_stepping_wraps_at_the_ends(daemon, monkeypatch):
+    """This is a key you press repeatedly to walk the list, so stopping dead
+    at the end is worse than coming round again."""
+    daemon.store.apply_snapshot([session(0), session(1), session(2)])
+    monkeypatch.setattr(daemon.db, "focused_ids", lambda: {"s-2"})
+
+    daemon._run_action("next_session")
+
+    assert daemon.link.sent == [{"t": "type", "v": "ctrl+1"}]
+
+
+def test_stepping_only_visits_slots_that_have_a_session(daemon, monkeypatch):
+    """Slots past the end of your pins are empty and must not be landed on."""
+    daemon.store.apply_snapshot([session(0), session(1)])
+    monkeypatch.setattr(daemon.db, "focused_ids", lambda: {"s-1"})
+
+    daemon._run_action("next_session")
+
+    # Wraps back to the first rather than stepping into slot 3 of 8, which has
+    # nothing behind it.
+    assert daemon.link.sent == [{"t": "type", "v": "ctrl+1"}]
+
+
+def test_stepping_from_nowhere_starts_at_an_end(daemon, monkeypatch):
+    """With the app on something unpinned there is nothing to step from, and
+    refusing to move at all would just look broken."""
+    daemon.store.apply_snapshot([session(0), session(1)])
+    monkeypatch.setattr(daemon.db, "focused_ids", lambda: {"unrelated"})
+
+    daemon._run_action("next_session")
+    assert daemon.link.sent == [{"t": "type", "v": "ctrl+1"}]
+
+    daemon.link.sent.clear()
+    daemon._run_action("previous_session")
     assert daemon.link.sent == [{"t": "type", "v": "ctrl+2"}]
 
 
@@ -116,9 +127,10 @@ def test_actions_never_call_sendinput(daemon, monkeypatch):
     monkeypatch.setattr(main_module.actions, "send_chord", fail)
     monkeypatch.setattr(main_module.actions, "focus_then_chord", fail)
 
-    daemon.store.apply_snapshot([session(0, asking=True, asking_at=1.0)])
-    for action in ("new_session", "interrupt", "approve", "next_attention"):
+    daemon.store.apply_snapshot([session(0), session(1)])
+    for action in ("next_session", "previous_session"):
         daemon._run_action(action)
+
 
 def test_an_old_pad_is_reported_once(daemon, caplog):
     """An old pad ignores messages it does not recognise, so the actions that

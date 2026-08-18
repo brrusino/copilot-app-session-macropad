@@ -81,15 +81,3 @@ log_level = "INFO"
 # needs_approval = [[255, 140, 30], "pulse"]
 # error          = [[255, 20, 20],  "solid"]
 
-[actions]
-# Keystrokes the daemon asks the PAD to type. It cannot type them itself:
-# SendInput reaches nothing from a background process, and over RDP the
-# keyboard belongs to the client machine anyway.
-#
-# There is no "approve" here -- approving is the Enter key on row 4, typed
-# straight into whatever you are looking at.
-#
-# new_session is confirmed against the running app. interrupt is a starting
-# point and wants confirming -- see "Calibration" in the README.
-interrupt = "escape"
-new_session = "ctrl+n"

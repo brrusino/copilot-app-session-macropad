@@ -459,7 +459,7 @@ def test_key_events_carry_role_metadata(firmware):
 
     assert firmware._describe(fw_config.SESSION_KEYS[2]) == {"role": "session", "slot": 2}
     assert firmware._describe(fw_config.DICTATION_KEYS[0]) == {"role": "dictation"}
-    assert firmware._describe(fw_config.FREE_KEYS[0]) == {"role": "free"}
+    assert firmware._describe(list(fw_config.TYPING_KEYS)[0]) == {"role": "typing"}
     action_key = list(fw_config.ACTION_KEYS)[0]
     described = firmware._describe(action_key)
     assert described["role"] == "action"
@@ -499,7 +499,7 @@ def test_non_session_keys_send_no_shortcut(firmware):
     import config as fw_config
 
     assert firmware._shortcut_for(fw_config.DICTATION_KEYS[0]) is None
-    assert firmware._shortcut_for(fw_config.FREE_KEYS[0]) is None
+    assert firmware._shortcut_for(list(fw_config.TYPING_KEYS)[0]) is None
     assert firmware._shortcut_for(fw_config.ROWS[2][0]) is None
 
 

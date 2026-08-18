@@ -38,15 +38,14 @@ ROWS = (
 # The 8 session slots, in order. Slot i mirrors the i-th pinned session.
 SESSION_KEYS = ROWS[0] + ROWS[1]
 
-# Row 3 global actions, left to right. Names are sent verbatim to the host.
+# Row 3, left to right.
 #
-# The first key is deliberately unbound: approving is now the Enter key on row
-# 4, which types into the session you are already looking at rather than asking
-# the daemon to find one for you.
+# The first two are fixed chords the pad types itself (see TYPING_KEYS); only
+# the last two need the host, because "previous" and "next" depend on which
+# session is currently open and the pad cannot know that.
 ACTION_KEYS = {
-    ROWS[2][1]: "interrupt",
-    ROWS[2][2]: "next_attention",
-    ROWS[2][3]: "new_session",
+    ROWS[2][2]: "previous_session",
+    ROWS[2][3]: "next_session",
 }
 
 # Dictation: two adjacent bottom-row keys driving ONE push-to-talk chord.
@@ -90,16 +89,19 @@ FOCUS_KEYS = tuple(k for row in ROWS for k in row if k not in DICTATION_KEYS)
 # routing them through the host would only add latency and a dependency on the
 # daemon being up. Each value is a tuple of chords, sent in order.
 #
-#   left  - clear the composer: select everything, then delete it
-#   right - submit, which is also how you approve a prompt
+#   row 3 left  - new chat
+#   row 3 next  - new session
+#   row 4 left  - clear the composer: select everything, then delete it
+#   row 4 right - submit, which is also how you approve a prompt
 TYPING_KEYS = {
+    ROWS[2][0]: ("ctrl+shift+o",),
+    ROWS[2][1]: ("ctrl+n",),
     ROWS[3][0]: ("ctrl+a", "delete"),
     ROWS[3][3]: ("enter",),
 }
 
-# Bottom-row keys with no binding. Presses are still reported to the host so
-# they can be bound later without a reflash.
-FREE_KEYS = (ROWS[2][0],)
+# Every key has a job now.
+FREE_KEYS = ()
 
 # Type the app's own Ctrl+<n> shortcut when a session key is pressed.
 #

@@ -35,44 +35,27 @@ DEFAULT_SLOT_COUNT = 8
 #: trade-off between LED freshness and idle CPU, not a correctness boundary.
 DEFAULT_RECONCILE_INTERVAL = 1.0
 
-
-@dataclass
-class ActionBindings:
-    """Keystrokes for the row 3 global actions.
-
-    These are typed by the **pad**, not by this process -- see
-    ``MacropadDaemon._type_chord``. The daemon has no working way to synthesise
-    a keystroke, so anything here is sent to the pad to type.
-
-    ``interrupt`` acts on the session the app currently has open, and never
-    navigates. Switching and acting on one press means stopping work you have
-    not looked at. It refuses unless the focused session is actually working.
-    Use the next-attention key to reach a session, read it, then act.
-
-    Approving is **not** here. It is the Enter key on row 4, typed straight
-    into whatever you are looking at, which is both simpler and safer than
-    having the daemon pick a session to confirm on your behalf.
-
-    Verified against the app's own accessibility labels on this machine:
-
-        Ctrl+B          toggle sidebar
-        Ctrl+K          search
-        Ctrl+Comma      settings
-        Ctrl+T          add tab
-        Ctrl+Alt+B      toggle review panel
-        Ctrl+[ / Ctrl+] back / forward
-        Ctrl+Alt+\\      open plan
-        Ctrl+<n>        select the nth pinned session
-        Ctrl+N          new session
-
-    ``interrupt`` is **not** in that list and remains unconfirmed. The app
-    exposes its full set under Settings -> Accessibility; read it off there and
-    correct this rather than assuming the default is right.
-    """
-
-    interrupt: str = "escape"
-    #: Confirmed against the running app.
-    new_session: str = "ctrl+n"
+#: App shortcuts this project relies on, confirmed on a running instance --
+#: the first eight read straight off its accessibility labels, the last two
+#: told to us and verified in use.
+#:
+#:     Ctrl+B          toggle sidebar
+#:     Ctrl+K          search
+#:     Ctrl+Comma      settings
+#:     Ctrl+T          add tab
+#:     Ctrl+Alt+B      toggle review panel
+#:     Ctrl+[ / Ctrl+] back / forward
+#:     Ctrl+Alt+\      open plan
+#:     Ctrl+<n>        select the nth pinned session
+#:     Ctrl+N          new session
+#:     Ctrl+Shift+O    new chat
+#:
+#: All of them are typed by the **pad**. This process cannot synthesise a
+#: keystroke at all: SendInput reaches nothing from a background daemon, and
+#: over RDP the keyboard belongs to the client machine anyway. The fixed ones
+#: live in ``keybow/config.py`` so they work with no daemon running; the daemon
+#: only supplies the ones it has to compute, which is Ctrl+<n> for a slot it
+#: worked out itself.
 
 
 @dataclass
@@ -97,7 +80,6 @@ class Config:
     reconcile_interval: float = DEFAULT_RECONCILE_INTERVAL
     brightness: float | None = None
     palette: dict[str, list] = field(default_factory=dict)
-    actions: ActionBindings = field(default_factory=ActionBindings)
     log_level: str = "INFO"
 
     @property
@@ -181,11 +163,5 @@ def load(path: Path | None = None) -> Config:
     cfg.slot_count = int(daemon.get("slot_count", cfg.slot_count))
     cfg.reconcile_interval = float(daemon.get("reconcile_interval", cfg.reconcile_interval))
     cfg.log_level = daemon.get("log_level", cfg.log_level)
-
-    actions = data.get("actions", {})
-    cfg.actions = ActionBindings(
-        interrupt=actions.get("interrupt", ActionBindings.interrupt),
-        new_session=actions.get("new_session", ActionBindings.new_session),
-    )
 
     return cfg

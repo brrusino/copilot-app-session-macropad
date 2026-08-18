@@ -15,7 +15,7 @@ Copilot app already exposes on your machine.
 +---------+---------+---------+---------+
 | session | session | session | session |   pinned sessions 5-8
 +---------+---------+---------+---------+
-|  free   |interrupt|  next   |   new   |   global agent actions
+|new chat |new sess.|  prev   |  next   |   create and navigate
 +---------+---------+---------+---------+
 |  clear  |    dictation      |  enter  |   composer keys + push-to-talk
 +---------+---------+---------+---------+
@@ -246,7 +246,8 @@ belongs to the machine in front of you, not the one the daemon runs on. The pad
 is a real USB keyboard, so its keystrokes are forwarded like any other. The
 dictation chord worked from day one for exactly this reason.
 
-Anything the *daemon* decides — interrupt, next attention — is sent to
+Anything the *daemon* decides — which session is "previous" or "next" — is sent
+to
 the pad as a chord for the pad to type.
 
 The `ghapp://sessions/<id>` deep link is still there as a fallback for slots
@@ -256,11 +257,11 @@ works, but it hands a URL to the shell, which spawns `github.exe` to route it:
 
 ### Shortcuts this relies on
 
-Confirmed from the app's own accessibility labels on a running instance:
+All confirmed against a running instance — the first eight read straight off
+the app's own accessibility labels, the last two verified in use:
 
 ```
-Ctrl+<n>          select the nth pinned session   <- what the pad types
-Ctrl+N            new session
+Ctrl+<n>          select the nth pinned session
 Ctrl+B            toggle sidebar
 Ctrl+K            search
 Ctrl+Comma        settings
@@ -268,11 +269,12 @@ Ctrl+T            add tab
 Ctrl+Alt+B        toggle review panel
 Ctrl+[ / Ctrl+]   back / forward
 Ctrl+Alt+\        open plan
+Ctrl+N            new session
+Ctrl+Shift+O      new chat
 ```
 
-`interrupt` is **not** in that list and is an unverified default. The app lists
-its full set under **Settings → Accessibility**; read it off there and set it
-in `[actions]` rather than trusting the default.
+Nothing here is a guess any more. The pad types all of them; the fixed ones
+live in `keybow/config.py` so they keep working with no daemon running.
 
 ## Setup
 
@@ -457,24 +459,29 @@ for why some setups have no transport available, and what to do about it.
 
 ## What rows 3 and 4 do
 
-| key | acts on | keys sent |
-|---|---|---|
-| interrupt | the session you're looking at | `Esc` |
-| next attention | picks the next session that wants you | `Ctrl+<n>` |
-| new session | — | `Ctrl+N` |
-| clear | the composer | `Ctrl+A`, `Delete` |
-| enter | the composer — this is also how you approve | `Enter` |
+| key | keys sent |
+|---|---|
+| new chat | `Ctrl+Shift+O` |
+| new session | `Ctrl+N` |
+| previous session | `Ctrl+<n-1>` |
+| next session | `Ctrl+<n+1>` |
+| clear | `Ctrl+A`, `Delete` |
+| enter | `Enter` |
 
-**Clear and enter are typed by the pad**, like dictation: they're plain
-keystrokes with no session logic, so routing them through the daemon would only
-add latency and a dependency on it being up.
+**Six of the eight are typed by the pad itself**, like dictation: they're fixed
+chords with no session logic, so routing them through the daemon would only add
+latency and a dependency on it being up.
 
-**Interrupt never navigates.** It acts on the focused session and refuses
-unless that session is actually working — stopping work you can't see is worse
-than doing nothing. Navigation is what **next attention** is for.
+**Previous and next need no shortcut of their own.** The pad's keys already
+*are* your pinned list, so stepping is just working out the neighbouring slot
+and typing its `Ctrl+<n>`. That's the daemon's one contribution here — it knows
+the pin order and which session is open. Empty slots are skipped and the ends
+wrap, since this is a key you press repeatedly to walk the list. With the app
+on something unpinned there's nothing to step from, so it starts at whichever
+end you're heading towards.
 
-There's no approve action any more. Approving is the **enter** key, typed into
-whatever you're looking at, which is both simpler and safer than having the
+**Enter is also how you approve.** There's no separate approve key: it types
+into whatever you're looking at, which is simpler and safer than having the
 daemon pick a session to confirm on your behalf.
 
 ### Raising the app
@@ -500,9 +507,6 @@ Two details that matter:
   the focus chord races the window coming up and lands wherever focus still
   was. The pad holds the keystroke until the daemon confirms the app is
   frontmost, and drops it if that never happens.
-
-`Ctrl+N` is confirmed. `Esc` is an unverified guess; see
-[Calibration](#calibration).
 
 ## Which session is on which key
 
@@ -566,11 +570,9 @@ the only place a physical key number appears.
 tool uses something else, change `DICTATION_CHORD` in `keybow/config.py` — it
 takes Adafruit HID keycode names, so no code change is needed.
 
-**Row 3 keystrokes.** `interrupt` is typed by the pad into the session you're
-looking at — it never navigates, and refuses unless that session is actually
-working. Its default is an **unverified guess**; the app lists its real
-shortcuts under **Settings → Accessibility**, so read it off there and fix
-`[actions]`. `new_session` (`ctrl+n`) is confirmed.
+**Row 3 and 4 keystrokes** live in `TYPING_KEYS` in `keybow/config.py`. Each
+value is a tuple of chords sent in order, so a key can do more than one thing —
+clear is `Ctrl+A` then `Delete`.
 
 **Your taskbar position.** `FOCUS_APP_CHORD` in `keybow/config.py` must match
 where the Copilot app sits on your taskbar, or every key will raise the *wrong*
@@ -679,12 +681,9 @@ Confirmed working on real hardware, against the live app:
 
 Still unverified:
 
-- **`interrupt`.** The mechanism is fixed — the pad types it now, where the
-  daemon never could — but `Esc` is still a guess. Read the real one from
-  **Settings → Accessibility** and set it in `[actions]`.
 - **Rows 3 and 4 as a whole**, and raising the app with `Win+7`. Implemented
-  and unit-tested, but not yet exercised on hardware — they need the firmware
-  reflashing first.
+  and unit-tested, and every shortcut they use is confirmed — but not yet
+  exercised on hardware, because they need the firmware reflashing first.
 - **The `interrupted` state.** Implemented and unit-tested, but never seen
   against real data: `was_interrupted` was false on every pinned session and all
   61 descendants when it was checked, so the signal is unconfirmed.

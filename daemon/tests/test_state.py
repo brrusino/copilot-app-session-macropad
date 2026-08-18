@@ -257,55 +257,13 @@ def test_snapshot_truncated_to_slot_count():
     assert store.session_for_slot(8) is None
 
 
-# --- attention routing ----------------------------------------------------
-
-
-def test_next_attention_prioritises_approval_over_error_and_unread():
-    store = StateStore()
-    store.apply_snapshot(
-        [
-            session(slot=0, session_id="s0", unread=True),
-            session(slot=1, session_id="s1"),
-            session(slot=2, session_id="s2"),
-        ],
-        now=100.0,
-    )
-    store.apply_hook("errorOccurred", "s1", now=101.0)
-    store.apply_hook("permissionRequest", "s2", now=101.0)
-    assert store.next_attention_slot() == 2
-
-
-def test_next_attention_falls_through_to_unread():
-    store = store_with(session(slot=0, session_id="s0", unread=True))
-    assert store.next_attention_slot() == 0
-
-
-def test_next_attention_none_when_all_idle():
-    store = store_with(session())
-    assert store.next_attention_slot() is None
-
-
-def test_next_attention_cycles_past_the_previous_slot():
-    store = StateStore()
-    store.apply_snapshot(
-        [
-            session(slot=0, session_id="s0", unread=True),
-            session(slot=1, session_id="s1", unread=True),
-        ],
-        now=100.0,
-    )
-    assert store.next_attention_slot() == 0
-    assert store.next_attention_slot(after=0) == 1
-    # Wraps back around rather than dead-ending.
-    assert store.next_attention_slot(after=1) == 0
-
-
-@pytest.mark.parametrize("event", ["preToolUse", "postToolUse", "subagentStart"])
+@pytest.mark.parametrize("event", ["preToolUse", "postToolUse", "subagentStart", "subagentStop"])
 def test_optional_activity_events_still_understood(event):
     """We don't register these, but handling them must not break if added."""
     store = store_with(session())
     store.apply_hook(event, "sess-a", now=101.0)
     assert store.slot_states()[0] == WORKING
+
 
 def test_working_survives_the_gap_between_turns():
     """A session mid-task drops to not-running between turns.
