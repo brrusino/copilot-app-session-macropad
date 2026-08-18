@@ -191,6 +191,36 @@ class Daemon:
             log.warning("slot %s did not appear to focus within %.0fs", slot, NAVIGATION_TIMEOUT)
         self.link.send({"t": "busy_done", "k": slot})
 
+    def _switch_to(self, slot: int | None) -> None:
+        """Select a slot the daemon chose, rather than one you pressed.
+
+        Goes through the pad for the same reason everything else does: the pad
+        is the only thing here that can type. The deep link stays as the
+        fallback for slots past the app's single-digit shortcuts.
+        """
+        if slot is None:
+            return
+        session = self.store.session_for_slot(slot)
+        if session is None or not session.focusable:
+            return
+        self._last_session_slot = slot
+        if slot < actions.MAX_SHORTCUT_SLOT and self.link.connected:
+            self._type_chord(f"ctrl+{slot + 1}")
+        else:
+            actions.focus_session(session.session_id or "")
+
+    def _type_chord(self, chord: str) -> None:
+        """Have the pad type a chord.
+
+        Not the daemon's own SendInput: that reaches nothing unless this
+        process happens to be on the interactive desktop, and over RDP the
+        keyboard belongs to the client machine anyway. The pad is a real USB
+        keyboard, so it is the only thing here that can actually type.
+        """
+        if not chord:
+            return
+        self.link.send({"t": "type", "v": chord})
+
     def _run_action(self, name: str) -> None:
         log.info("action %s", name)
 
@@ -200,7 +230,7 @@ class Daemon:
                 log.info("nothing needs attention")
                 return
             self._last_attention_slot = slot
-            self._activate_session(slot)
+            self._switch_to(slot)
             return
 
         if name == "approve":
@@ -210,7 +240,8 @@ class Daemon:
             if target is None or not target.focusable:
                 log.info("no session is waiting for approval")
                 return
-            actions.focus_then_chord(target.session_id or "", self.cfg.actions.approve)
+            self._switch_to(slot)
+            self._type_chord(self.cfg.actions.approve)
             return
 
         if name == "interrupt":
@@ -223,11 +254,12 @@ class Daemon:
             if target is None or not target.focusable:
                 log.info("no session to interrupt")
                 return
-            actions.focus_then_chord(target.session_id or "", self.cfg.actions.interrupt)
+            self._switch_to(slot)
+            self._type_chord(self.cfg.actions.interrupt)
             return
 
         if name == "new_session":
-            actions.send_chord(self.cfg.actions.new_session)
+            self._type_chord(self.cfg.actions.new_session)
             return
 
         log.warning("unknown action %r", name)

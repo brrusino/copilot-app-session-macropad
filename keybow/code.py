@@ -86,6 +86,61 @@ def _shortcut_for(key_number):
         return _DIGITS[index]
     return None
 
+
+# Chords the host asks the pad to type on its behalf.
+#
+# The host cannot type. Its only mechanism is SendInput, which reaches nothing
+# unless the daemon happens to run on the interactive desktop, and over RDP the
+# keyboard belongs to the client machine regardless. So any action that is
+# really a keystroke has to come back here and be typed by the pad.
+_CHORD_ALIASES = {
+    "ctrl": "LEFT_CONTROL",
+    "control": "LEFT_CONTROL",
+    "shift": "LEFT_SHIFT",
+    "alt": "LEFT_ALT",
+    "win": "LEFT_GUI",
+    "meta": "LEFT_GUI",
+    "cmd": "LEFT_GUI",
+    "esc": "ESCAPE",
+    "escape": "ESCAPE",
+    "enter": "ENTER",
+    "return": "ENTER",
+    "tab": "TAB",
+    "space": "SPACE",
+    "backspace": "BACKSPACE",
+    "delete": "DELETE",
+    "up": "UP_ARROW",
+    "down": "DOWN_ARROW",
+    "left": "LEFT_ARROW",
+    "right": "RIGHT_ARROW",
+    "comma": "COMMA",
+    "period": "PERIOD",
+    "backslash": "BACKSLASH",
+}
+
+_DIGIT_BY_CHAR = dict(zip("123456789", _DIGIT_NAMES))
+
+
+def _parse_chord(text):
+    """``"ctrl+shift+escape"`` -> a tuple of keycodes, or () if unusable."""
+    parts = [p.strip().lower() for p in str(text).split("+") if p.strip()]
+    if not parts:
+        return ()
+    names = []
+    for part in parts:
+        name = _CHORD_ALIASES.get(part)
+        if name is None and part in _DIGIT_BY_CHAR:
+            name = _DIGIT_BY_CHAR[part]
+        if name is None and len(part) == 1 and part.isalpha():
+            name = part.upper()
+        if name is None:
+            name = part.upper()
+        names.append(name)
+    resolved = _resolve_chord(names)
+    # All or nothing: a chord missing its modifier is not a safer version of
+    # itself, it is a different keystroke sent into whatever has focus.
+    return resolved if len(resolved) == len(names) else ()
+
 # --- serial ---------------------------------------------------------------
 
 _serial = usb_cdc.data
@@ -246,6 +301,17 @@ def _handle_message(msg):
             _press_flash.clear()
         elif isinstance(slot, int) and 0 <= slot < SLOT_COUNT:
             _press_flash.pop(config.SESSION_KEYS[slot], None)
+        return
+
+    if kind == "type":
+        # Type a chord on the host's behalf. See _parse_chord: the host has no
+        # working way to synthesise keystrokes itself.
+        chord = _parse_chord(msg.get("v") or "")
+        if chord:
+            try:
+                _keyboard.send(*chord)
+            except Exception:
+                pass
         return
 
     if kind == "palette":

@@ -40,12 +40,25 @@ DEFAULT_RECONCILE_INTERVAL = 1.0
 class ActionBindings:
     """Keystrokes for the row 3 global actions.
 
-    ``approve`` and ``interrupt`` are sent to the Copilot app after focusing the
-    relevant session. The defaults are starting points -- confirm them against
-    the running app and adjust here rather than in code.
+    These are typed by the **pad**, not by this process -- see
+    ``MacropadDaemon._type_chord``. The daemon has no working way to synthesise
+    a keystroke, so anything here is sent to the pad to type.
 
-    ``new_session`` has no verified deep link, so it is a plain chord sent to
-    the app; treat its default as a guess to be calibrated.
+    Verified against the app's own accessibility labels on this machine:
+
+        Ctrl+B          toggle sidebar
+        Ctrl+K          search
+        Ctrl+Comma      settings
+        Ctrl+T          add tab
+        Ctrl+Alt+B      toggle review panel
+        Ctrl+[ / Ctrl+] back / forward
+        Ctrl+Alt+\\      open plan
+        Ctrl+<n>        select the nth pinned session
+
+    The three below are **not** in that list and remain unconfirmed. The app
+    exposes its full set under Settings -> Accessibility; read them off there
+    and correct these rather than assuming the defaults are right. They are
+    starting points, not verified bindings.
     """
 
     approve: str = "enter"

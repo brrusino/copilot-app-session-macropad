@@ -91,6 +91,17 @@ def _install_stubs(monkeypatch):
     ):
         setattr(Keycode, _name, 0x1E + _i)
 
+    # Letters and the named keys a host-requested chord may reference, again
+    # with adafruit_hid's real values.
+    for _i in range(26):
+        setattr(Keycode, chr(ord("A") + _i), 0x04 + _i)
+    Keycode.ESCAPE = 0x29
+    Keycode.ENTER = 0x28
+    Keycode.TAB = 0x2B
+    Keycode.SPACE = 0x2C
+    Keycode.COMMA = 0x36
+    Keycode.BACKSLASH = 0x31
+
     keycode_mod.Keycode = Keycode
     monkeypatch.setitem(sys.modules, "adafruit_hid", hid_pkg)
     monkeypatch.setitem(sys.modules, "adafruit_hid.keyboard", keyboard_mod)
@@ -525,5 +536,35 @@ def test_shortcuts_can_be_turned_off(firmware, monkeypatch):
 
     monkeypatch.setattr(firmware, "_SEND_SHORTCUTS", False)
     firmware._on_down(fw_config.SESSION_KEYS[0], 0.0)
+    sends = [e for e in firmware._test_keyboard.history if e[0] == "send"]
+    assert sends == []
+# --- typing a chord the host asked for ------------------------------------
+
+
+def test_host_can_ask_the_pad_to_type_a_chord(firmware):
+    """The host cannot type: SendInput reaches nothing off the interactive
+    desktop, and over RDP the keyboard belongs to the client machine."""
+    firmware._handle_message({"t": "type", "v": "ctrl+escape"})
+    sends = [e for e in firmware._test_keyboard.history if e[0] == "send"]
+    assert sends == [("send", ("LEFT_CONTROL", 0x29))]
+
+
+def test_a_chord_missing_a_key_is_not_typed_at_all(firmware):
+    """A chord missing its modifier is a different keystroke, not a safer one.
+
+    Sending the bare key into whatever has focus is worse than doing nothing.
+    """
+    firmware._handle_message({"t": "type", "v": "ctrl+notarealkey"})
+    sends = [e for e in firmware._test_keyboard.history if e[0] == "send"]
+    assert sends == []
+
+
+def test_digits_and_letters_both_parse(firmware):
+    assert firmware._parse_chord("ctrl+3") == ("LEFT_CONTROL", 0x20)
+    assert firmware._parse_chord("ctrl+n") == ("LEFT_CONTROL", 0x11)
+
+
+def test_an_empty_chord_types_nothing(firmware):
+    firmware._handle_message({"t": "type", "v": ""})
     sends = [e for e in firmware._test_keyboard.history if e[0] == "send"]
     assert sends == []
