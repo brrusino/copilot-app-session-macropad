@@ -165,6 +165,12 @@ _slot_state = ["empty"] * SLOT_COUNT
 _action_flash = {}
 _ACTION_FLASH_SECS = 0.18
 
+#: Momentary white flash confirming a session key press. Held longer than the
+#: action flash because the app can take several seconds to navigate, and
+#: without visible acknowledgement the pad looks like it ignored the press.
+_press_flash = {}
+_PRESS_FLASH_SECS = 0.45
+
 # Dictation chord hold refcount. The chord engages when the first of the two
 # keys goes down and releases only when the last one comes up, so rolling off
 # one key mid-sentence does not cut you off.
@@ -269,7 +275,9 @@ def _resolve(key_number, now, connected):
     elif key_number in config.ACTION_KEYS:
         name = "action_active" if _action_flash.get(key_number, 0) > now else "action"
     elif key_number in config.SESSION_KEYS:
-        if not connected:
+        if _press_flash.get(key_number, 0) > now:
+            name = "pressed"
+        elif not connected:
             name = "disconnected"
         else:
             name = _slot_state[config.SESSION_KEYS.index(key_number)]
@@ -313,6 +321,9 @@ def _on_down(key_number, now):
         _dictation_down.add(key_number)
     elif key_number in config.ACTION_KEYS:
         _action_flash[key_number] = now + _ACTION_FLASH_SECS
+    elif key_number in config.SESSION_KEYS:
+        # Acknowledge immediately; the daemon's response is seconds away.
+        _press_flash[key_number] = now + _PRESS_FLASH_SECS
 
     if _SEND_FKEYS:
         keycode = _function_key_for(key_number)

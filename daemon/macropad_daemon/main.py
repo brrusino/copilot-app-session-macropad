@@ -265,7 +265,38 @@ def _print_status(cfg: config_module.Config) -> int:
     for slot in range(cfg.slot_count):
         session = store.session_for_slot(slot)
         name = session.name if session else "-"
-        print(f"  key {slot + 1}  {states[slot]:<15} {name}")
+        colour = STATE_COLOURS.get(states[slot], "")
+        print(f"  key {slot + 1}  {states[slot]:<15} {colour:<22} {name}")
+    return 0
+
+
+#: What each state looks like on the pad. Kept beside the status output so the
+#: LED can always be translated back to a meaning without guessing.
+STATE_COLOURS = {
+    "working": "blue, breathing",
+    "unread": "green, solid",
+    "needs_approval": "orange, blinking",
+    "error": "red, solid",
+    "idle": "dim white",
+    "empty": "off",
+}
+
+
+def _print_colours() -> int:
+    print("What the session keys mean:")
+    print()
+    for state, colour in STATE_COLOURS.items():
+        print(f"  {colour:<20}  {state}")
+    print()
+    print("  dim blue              daemon not connected (no live state)")
+    print("  bright white flash    your key press was registered")
+    print()
+    print("Notes:")
+    print("  * 'working' includes work done by a session's CHILD sessions, so a")
+    print("    parent shows blue while its subagents run.")
+    print("  * 'unread' means output you have not looked at yet; focusing the")
+    print("    session clears it. 'working' is not cleared by focusing.")
+    print("  * The bottom-left two keys are the dictation chord, not a session.")
     return 0
 
 
@@ -352,6 +383,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", help="path to macropad.toml")
     parser.add_argument("--status", action="store_true", help="print resolved slots and exit")
     parser.add_argument(
+        "--colours",
+        "--colors",
+        dest="colours",
+        action="store_true",
+        help="explain what each LED colour means",
+    )
+    parser.add_argument(
         "--ports",
         action="store_true",
         help="list serial ports and probe for the pad (checks COM redirection)",
@@ -397,6 +435,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.status:
         return _print_status(cfg)
+
+    if args.colours:
+        return _print_colours()
 
     if args.ports:
         return _print_ports()

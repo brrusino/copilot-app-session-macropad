@@ -91,19 +91,26 @@ BRIGHTNESS = 0.6
 # {"t":"palette"} message from the host, so tuning does not require a reflash.
 PALETTE = {
     "empty":          ((0, 0, 0),       "off"),
-    "idle":           ((90, 90, 90),    "solid"),
+    "idle":           ((110, 110, 110), "solid"),
     "working":        ((0, 80, 255),    "breathe"),
     "unread":         ((0, 230, 60),    "solid"),
-    "needs_approval": ((255, 140, 30),  "pulse"),
+    "needs_approval": ((255, 110, 0),   "pulse"),
     "error":          ((255, 20, 20),   "solid"),
     # Shown on every session key when the host daemon is not connected.
-    "disconnected":   ((18, 18, 18),    "solid"),
+    # Deliberately a different HUE to idle, not just dimmer: "the daemon is
+    # down" and "this session is idle" are completely different situations and
+    # two shades of dim white are impossible to tell apart on these LEDs.
+    "disconnected":   ((0, 0, 45),      "solid"),
     # Action keys sit dim until pressed.
     "action":         ((60, 40, 90),    "solid"),
     "action_active":  ((200, 150, 255), "solid"),
     # Dictation keys: dim normally, hot while the chord is held.
     "dictation":      ((70, 30, 60),    "solid"),
     "dictation_live": ((255, 60, 140),  "solid"),
+    # Momentary flash confirming a session key press was registered. The app
+    # takes several seconds to navigate, so without this the pad appears to
+    # have ignored you.
+    "pressed":        ((255, 255, 255), "solid"),
 }
 
 # Animation tuning, in seconds per full cycle.
