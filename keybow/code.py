@@ -38,7 +38,11 @@ from pmk.platform.keybow2040 import Keybow2040 as Hardware
 
 import config
 
-FIRMWARE_VERSION = 1
+#: Bumped whenever the host/pad protocol gains something the daemon depends on.
+#:
+#: 1 - initial: state, palette, brightness, key events
+#: 2 - `type` (host asks the pad to type a chord) and `busy_done`
+FIRMWARE_VERSION = 2
 SLOT_COUNT = len(config.SESSION_KEYS)
 
 keybow = PMK(Hardware())

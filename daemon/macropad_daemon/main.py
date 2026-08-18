@@ -27,6 +27,7 @@ from logging.handlers import RotatingFileHandler
 
 from . import config as config_module
 from . import actions, hooks_install
+from . import state as state_module
 from .copilot_db import CopilotDB
 from .hook_server import PortInUseError
 from .state import StateStore
@@ -38,6 +39,11 @@ log = logging.getLogger("macropad")
 #: ~4.5s on this machine, so this leaves generous headroom while still
 #: guaranteeing the pulse ends if navigation silently fails.
 NAVIGATION_TIMEOUT = 12.0
+
+#: Pad protocol version this daemon needs. Bumped alongside
+#: ``FIRMWARE_VERSION`` in keybow/code.py whenever the daemon starts relying on
+#: a message an older pad would silently ignore.
+REQUIRED_FIRMWARE = 2
 
 
 class Daemon:
@@ -110,7 +116,19 @@ class Daemon:
     def _on_pad_event(self, message: dict) -> None:
         kind = message.get("t")
         if kind == "hello":
-            log.info("pad firmware v%s, %s slots", message.get("fw"), message.get("slots"))
+            firmware = message.get("fw")
+            log.info("pad firmware v%s, %s slots", firmware, message.get("slots"))
+            self._pad_firmware = firmware if isinstance(firmware, int) else 0
+            if self._pad_firmware < REQUIRED_FIRMWARE:
+                # Say this loudly. An old pad ignores messages it does not
+                # recognise, so the actions that depend on them fail silently
+                # and look like the app ignoring its own shortcuts.
+                log.warning(
+                    "pad firmware is v%s but the daemon needs v%s: the row 3 "
+                    "actions cannot work until you reflash keybow/ onto the pad",
+                    self._pad_firmware,
+                    REQUIRED_FIRMWARE,
+                )
             return
         if kind != "down":
             # Releases matter only for the dictation chord, which the firmware
@@ -204,6 +222,19 @@ class Daemon:
             return
         self.link.send({"t": "type", "v": chord})
 
+    def _focused_slot(self) -> int | None:
+        """The slot the app currently has open, if it is one of ours."""
+        focused = self.db.focused_ids()
+        if not focused:
+            return None
+        for slot in range(self.cfg.slot_count):
+            session = self.store.session_for_slot(slot)
+            if session is None:
+                continue
+            if {session.workspace_id, session.session_id} & focused:
+                return slot
+        return None
+
     def _run_action(self, name: str) -> None:
         log.info("action %s", name)
 
@@ -216,29 +247,38 @@ class Daemon:
             self._switch_to(slot)
             return
 
-        if name == "approve":
-            # Target the session actually asking, not whatever was last touched.
-            slot = self.store.next_attention_slot()
-            target = self.store.session_for_slot(slot) if slot is not None else None
-            if target is None or not target.focusable:
-                log.info("no session is waiting for approval")
-                return
-            self._switch_to(slot)
-            self._type_chord(self.cfg.actions.approve)
-            return
-
-        if name == "interrupt":
-            slot = self._last_session_slot
+        # approve and interrupt act on the session **in front of you**, and
+        # never navigate.
+        #
+        # Switching and acting on one press means acting on a session you have
+        # not looked at: approving a prompt you have not read, or stopping work
+        # you cannot see. It is also unsafe in a way that is easy to miss --
+        # approve types Enter, so aimed at a session whose composer holds text
+        # it would send that text rather than approve anything.
+        #
+        # Navigation is what the next-attention key is for. Press it to reach
+        # the session that wants you, read it, then act.
+        if name in ("approve", "interrupt"):
+            slot = self._focused_slot()
             if slot is None:
-                # Fall back to whichever session is currently working.
-                states = self.store.slot_states()
-                slot = next((i for i, s in enumerate(states) if s == "working"), None)
-            target = self.store.session_for_slot(slot) if slot is not None else None
-            if target is None or not target.focusable:
-                log.info("no session to interrupt")
+                log.info("%s: the app is not on one of the pad's sessions", name)
                 return
-            self._switch_to(slot)
-            self._type_chord(self.cfg.actions.interrupt)
+            session = self.store.session_for_slot(slot)
+            state = self.store.resolve(session)
+            if name == "approve" and state != state_module.NEEDS_APPROVAL:
+                # Refusing here is the point: a stray press must not turn into
+                # an Enter typed into whatever happens to be focused.
+                log.info("approve: %s is not waiting on you (%s)", session.name, state)
+                return
+            if name == "interrupt" and state != state_module.WORKING:
+                log.info("interrupt: %s is not working (%s)", session.name, state)
+                return
+            chord = (
+                self.cfg.actions.approve
+                if name == "approve"
+                else self.cfg.actions.interrupt
+            )
+            self._type_chord(chord)
             return
 
         if name == "new_session":

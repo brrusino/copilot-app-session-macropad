@@ -257,6 +257,7 @@ Confirmed from the app's own accessibility labels on a running instance:
 
 ```
 Ctrl+<n>          select the nth pinned session   <- what the pad types
+Ctrl+N            new session
 Ctrl+B            toggle sidebar
 Ctrl+K            search
 Ctrl+Comma        settings
@@ -266,10 +267,9 @@ Ctrl+[ / Ctrl+]   back / forward
 Ctrl+Alt+\        open plan
 ```
 
-The row 3 action bindings (`approve`, `interrupt`, `new_session`) are **not**
-in that list and are unverified defaults. The app lists its full set under
-**Settings → Accessibility**; read them off there and set them in
-`[actions]` rather than trusting the defaults.
+`approve` and `interrupt` are **not** in that list and are unverified defaults.
+The app lists its full set under **Settings → Accessibility**; read them off
+there and set them in `[actions]` rather than trusting the defaults.
 
 ## Setup
 
@@ -452,6 +452,29 @@ would show. It also means everything is in place the moment a transport appears.
 See [When the pad's machine can run nothing at all](#when-the-pads-machine-can-run-nothing-at-all)
 for why some setups have no transport available, and what to do about it.
 
+## What row 3 does
+
+| key | acts on | keys sent |
+|---|---|---|
+| approve | the session you're looking at | `Enter` |
+| interrupt | the session you're looking at | `Esc` |
+| next attention | picks the next session that wants you | `Ctrl+<n>` |
+| new session | — | `Ctrl+N` |
+
+**Approve and interrupt never navigate.** Switching and acting on a single
+press means acting on a session you haven't looked at — approving a prompt you
+haven't read, or stopping work you can't see. Approve also types `Enter`, so
+aimed at a session whose composer holds text it would *send that text* rather
+than approve anything.
+
+So both refuse unless the focused session is actually in the matching state:
+approve only fires on a session that's asking, interrupt only on one that's
+working. Navigation is what **next attention** is for — press it to reach the
+session that wants you, read it, then act.
+
+`Ctrl+N` is confirmed. `Enter` and `Esc` are unverified guesses; see
+[Calibration](#calibration).
+
 ## Which session is on which key
 
 Keys 1-8 map to `Ctrl+1` … `Ctrl+8`, which is the app's own shortcut for
@@ -514,11 +537,11 @@ the only place a physical key number appears.
 tool uses something else, change `DICTATION_CHORD` in `keybow/config.py` — it
 takes Adafruit HID keycode names, so no code change is needed.
 
-**Row 3 keystrokes.** `approve`, `interrupt` and `new_session` are typed by the
-pad on the daemon's behalf, after switching to the target session. The defaults
-in `config/macropad.toml` are **unverified guesses** — the app lists its real
-shortcuts under **Settings → Accessibility**, so read them off there and fix
-`[actions]` rather than trusting the defaults.
+**Row 3 keystrokes.** `approve` and `interrupt` are typed by the pad into the
+session you're looking at — they never navigate, and both refuse unless that
+session is actually asking / working. The defaults are **unverified guesses**;
+the app lists its real shortcuts under **Settings → Accessibility**, so read
+them off there and fix `[actions]`. `new_session` (`ctrl+n`) is confirmed.
 
 **LED timing you may notice, both deliberate.** A working session holds blue for
 a few seconds after it stops, because `is_running` drops out between turns (up

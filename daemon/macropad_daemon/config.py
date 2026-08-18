@@ -44,6 +44,14 @@ class ActionBindings:
     ``MacropadDaemon._type_chord``. The daemon has no working way to synthesise
     a keystroke, so anything here is sent to the pad to type.
 
+    ``approve`` and ``interrupt`` act on the session the app currently has
+    open, and never navigate. Switching and acting on one press means acting on
+    a session you have not looked at, and ``approve`` types Enter -- aimed at a
+    session whose composer holds text, it would send that text rather than
+    approve anything. Both refuse unless the focused session is actually in the
+    matching state. Use the next-attention key to reach a session, read it,
+    then act.
+
     Verified against the app's own accessibility labels on this machine:
 
         Ctrl+B          toggle sidebar
@@ -54,15 +62,17 @@ class ActionBindings:
         Ctrl+[ / Ctrl+] back / forward
         Ctrl+Alt+\\      open plan
         Ctrl+<n>        select the nth pinned session
+        Ctrl+N          new session
 
-    The three below are **not** in that list and remain unconfirmed. The app
-    exposes its full set under Settings -> Accessibility; read them off there
-    and correct these rather than assuming the defaults are right. They are
-    starting points, not verified bindings.
+    ``approve`` and ``interrupt`` are **not** in that list and remain
+    unconfirmed. The app exposes its full set under Settings -> Accessibility;
+    read them off there and correct these rather than assuming the defaults are
+    right. They are starting points, not verified bindings.
     """
 
     approve: str = "enter"
     interrupt: str = "escape"
+    #: Confirmed against the running app.
     new_session: str = "ctrl+n"
 
 

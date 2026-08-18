@@ -66,46 +66,60 @@ def test_new_session_is_typed_by_the_pad(daemon):
     assert daemon.link.sent == [{"t": "type", "v": daemon.cfg.actions.new_session}]
 
 
-def test_interrupt_targets_a_session_and_types_through_the_pad(daemon):
-    daemon.store.apply_snapshot([session(0, is_running=True)])
-    daemon._last_session_slot = 0
+def test_interrupt_acts_on_the_focused_session_without_navigating(daemon, monkeypatch):
+    """Row 3 acts on the session in front of you.
+
+    Switching and acting on one press means acting on a session you have not
+    looked at -- stopping work you cannot see, or approving a prompt you have
+    not read. Navigation is what the next-attention key is for.
+    """
+    daemon.store.apply_snapshot([session(0, is_running=True), session(1, is_running=True)])
+    monkeypatch.setattr(daemon.db, "focused_ids", lambda: {"s-1"})
 
     daemon._run_action("interrupt")
 
-    assert daemon.link.sent == [
-        {"t": "type", "v": "ctrl+1"},
-        {"t": "type", "v": daemon.cfg.actions.interrupt},
-    ]
+    assert daemon.link.sent == [{"t": "type", "v": daemon.cfg.actions.interrupt}]
 
 
-def test_interrupt_falls_back_to_whatever_is_working(daemon):
-    """Pressing interrupt without having pressed a session key first."""
-    daemon.store.apply_snapshot([session(0), session(1, is_running=True)])
+def test_interrupt_does_nothing_when_the_session_is_not_working(daemon, monkeypatch):
+    daemon.store.apply_snapshot([session(0)])
+    monkeypatch.setattr(daemon.db, "focused_ids", lambda: {"s-0"})
 
     daemon._run_action("interrupt")
 
-    assert daemon.link.sent[0] == {"t": "type", "v": "ctrl+2"}
+    assert daemon.link.sent == []
 
 
-def test_approve_targets_the_session_that_is_actually_asking(daemon):
-    """Not whatever was touched last -- approving the wrong session is worse
-    than doing nothing."""
+def test_approve_acts_on_the_focused_session_without_navigating(daemon, monkeypatch):
     daemon.store.apply_snapshot(
         [session(0, is_running=True), session(1, asking=True, asking_at=1.0)]
     )
-    daemon._last_session_slot = 0
+    monkeypatch.setattr(daemon.db, "focused_ids", lambda: {"s-1"})
 
     daemon._run_action("approve")
 
-    assert daemon.link.sent == [
-        {"t": "type", "v": "ctrl+2"},
-        {"t": "type", "v": daemon.cfg.actions.approve},
-    ]
+    assert daemon.link.sent == [{"t": "type", "v": daemon.cfg.actions.approve}]
 
 
-def test_nothing_is_typed_when_no_session_is_asking(daemon):
+def test_approve_refuses_when_the_focused_session_is_not_asking(daemon, monkeypatch):
+    """The important one. approve types Enter, so aimed at a session whose
+    composer holds text it would send that text rather than approve anything.
+    """
     daemon.store.apply_snapshot([session(0, is_running=True)])
+    monkeypatch.setattr(daemon.db, "focused_ids", lambda: {"s-0"})
+
     daemon._run_action("approve")
+
+    assert daemon.link.sent == []
+
+
+def test_nothing_happens_when_the_app_is_not_on_a_pad_session(daemon, monkeypatch):
+    daemon.store.apply_snapshot([session(0, asking=True, asking_at=1.0)])
+    monkeypatch.setattr(daemon.db, "focused_ids", lambda: {"some-other-session"})
+
+    daemon._run_action("approve")
+    daemon._run_action("interrupt")
+
     assert daemon.link.sent == []
 
 
