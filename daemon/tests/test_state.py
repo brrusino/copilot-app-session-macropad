@@ -11,6 +11,7 @@ from macropad_daemon.state import (
     ERROR,
     IDLE,
     NEEDS_APPROVAL,
+    INTERRUPTED,
     UNREAD,
     WORKING,
     WORKING_HOLD,
@@ -367,3 +368,53 @@ def test_asking_outranks_working():
     )
     store.apply_snapshot([waiting], now=100.0)
     assert store.resolve(waiting) == NEEDS_APPROVAL
+
+def test_answering_a_question_retires_it_before_the_app_notices():
+    """The app writes no activity item until a whole turn ends.
+
+    So agent_asking stays the newest item for as long as the answer takes to
+    work through -- observed at over twenty minutes. Without hook evidence the
+    slot blinks orange the entire time you watch it work, which is exactly the
+    false alarm the state exists to prevent.
+    """
+    asked_at = 1_000_000.0
+    store = StateStore(slot_count=2)
+    waiting = PinnedSession(
+        slot=0, workspace_id="w", session_id="s", name="n",
+        is_running=True, unread=False, was_interrupted=False,
+        asking=True, asking_at=asked_at,
+    )
+    store.apply_snapshot([waiting], now=100.0)
+    assert store.resolve(waiting) == NEEDS_APPROVAL
+
+    # You answer: a tool call fires after the question was asked.
+    overlay = store.overlay_for("s")
+    overlay.worked_wall = asked_at + 5
+    overlay.working = True
+    overlay.working_at = 100.0
+    assert store.resolve(waiting) == WORKING
+
+
+def test_work_from_before_the_question_does_not_retire_it():
+    """Only activity *after* the question counts as having answered it."""
+    asked_at = 1_000_000.0
+    store = StateStore(slot_count=2)
+    waiting = PinnedSession(
+        slot=0, workspace_id="w", session_id="s", name="n",
+        is_running=True, unread=False, was_interrupted=False,
+        asking=True, asking_at=asked_at,
+    )
+    store.apply_snapshot([waiting], now=100.0)
+    store.overlay_for("s").worked_wall = asked_at - 30
+    assert store.resolve(waiting) == NEEDS_APPROVAL
+
+
+def test_interrupted_outranks_working():
+    """A slot frozen mid-task otherwise sits there looking busy forever."""
+    store = StateStore(slot_count=2)
+    stopped = PinnedSession(
+        slot=0, workspace_id="w", session_id="s", name="n",
+        is_running=True, unread=False, was_interrupted=True,
+    )
+    store.apply_snapshot([stopped], now=100.0)
+    assert store.resolve(stopped) == INTERRUPTED

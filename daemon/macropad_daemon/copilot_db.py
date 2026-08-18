@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -68,6 +69,9 @@ class PinnedSession:
     #: auto-approval, whereas the app records ``agent_asking`` only when the
     #: agent actually stops to ask.
     asking: bool = False
+    #: When that question was asked, as epoch seconds, so it can be retired
+    #: once hooks show the session working again.
+    asking_at: float = 0.0
     auto_approve: bool = True
 
     @property
@@ -276,7 +280,8 @@ class CopilotDB:
 
         def rolled_up(pin: str, own_running: bool, own_unread: bool):
             running, has_unread = own_running, own_unread
-            asking = False
+            asking_at = 0.0
+            interrupted = False
             for child in descendants.get(pin, ()):
                 row = descendant_rows.get(child)
                 if row is None or row["workspace_archived_at"] is not None:
@@ -285,9 +290,10 @@ class CopilotDB:
                     running = True
                 if child in unread:
                     has_unread = True
-                if row["session_id"] in asking_sessions:
-                    asking = True
-            return running, has_unread, asking
+                asking_at = max(asking_at, asking_sessions.get(row["session_id"], 0.0))
+                if row["was_interrupted"]:
+                    interrupted = True
+            return running, has_unread, asking_at, interrupted
 
         resolved: list[PinnedSession] = []
         for pin in order:
@@ -300,8 +306,11 @@ class CopilotDB:
             if row is not None:
                 if row["workspace_archived_at"] is not None:
                     continue
-                running, has_unread, child_asking = rolled_up(
+                running, has_unread, child_asking_at, child_interrupted = rolled_up(
                     pin, bool(row["is_running"]), pin in unread
+                )
+                asking_at = max(
+                    asking_sessions.get(row["session_id"], 0.0), child_asking_at
                 )
                 resolved.append(
                     PinnedSession(
@@ -311,8 +320,9 @@ class CopilotDB:
                         name=row["workspace_name"] or row["session_title"] or "(untitled)",
                         is_running=running,
                         unread=has_unread,
-                        was_interrupted=bool(row["was_interrupted"]),
-                        asking=row["session_id"] in asking_sessions or child_asking,
+                        was_interrupted=bool(row["was_interrupted"]) or child_interrupted,
+                        asking=asking_at > 0.0,
+                        asking_at=asking_at,
                         auto_approve=bool(row["auto_approve"]),
                     )
                 )
@@ -321,6 +331,7 @@ class CopilotDB:
             session = session_rows.get(pin)
             if session is None or session["archived_at"] is not None:
                 continue
+            asking_at = asking_sessions.get(pin, 0.0)
             resolved.append(
                 PinnedSession(
                     slot=len(resolved),
@@ -330,7 +341,8 @@ class CopilotDB:
                     is_running=bool(session["is_running"]),
                     unread=pin in unread,
                     was_interrupted=bool(session["was_interrupted"]),
-                    asking=pin in asking_sessions,
+                    asking=asking_at > 0.0,
+                    asking_at=asking_at,
                     auto_approve=bool(session["auto_approve"]),
                 )
             )
@@ -340,14 +352,18 @@ class CopilotDB:
     ASKING_ACTIVITY = ("agent_asking", "agent_plan_ready")
 
     @classmethod
-    def _asking_session_ids(cls, conn: sqlite3.Connection) -> set[str]:
-        """Sessions whose most recent activity is a question for you.
+    def _asking_session_ids(cls, conn: sqlite3.Connection) -> dict[str, float]:
+        """Sessions whose most recent activity is a question, and when.
 
         Only the *latest* item counts. ``is_read`` is not usable here -- the app
         leaves it 0 on essentially every row, so filtering on it would mark
-        every question ever asked as still outstanding. Comparing against the
-        newest item is self-clearing instead: once the agent moves on it writes
-        a newer item and the slot stops asking.
+        every question ever asked as still outstanding.
+
+        The timestamp matters as much as the flag. The app writes no new
+        activity item until a whole turn finishes, so answering a question
+        leaves ``agent_asking`` as the newest item for as long as the answer
+        takes to work through. Callers retire the question by comparing this
+        against live hook activity.
 
         A missing table is tolerated: the feed is a newer addition to the app,
         and an older database must still light the pad rather than fail.
@@ -355,7 +371,9 @@ class CopilotDB:
         try:
             rows = conn.execute(
                 """
-                SELECT a.session_id AS session_id, a.activity_type AS activity_type
+                SELECT a.session_id AS session_id,
+                       a.activity_type AS activity_type,
+                       a.created_at AS created_at
                 FROM activity_items AS a
                 JOIN (
                     SELECT session_id, MAX(created_at) AS newest
@@ -367,12 +385,30 @@ class CopilotDB:
                 """
             ).fetchall()
         except sqlite3.Error:
-            return set()
-        return {
-            row["session_id"]
-            for row in rows
-            if row["session_id"] and row["activity_type"] in cls.ASKING_ACTIVITY
-        }
+            return {}
+        asking: dict[str, float] = {}
+        for row in rows:
+            if not row["session_id"] or row["activity_type"] not in cls.ASKING_ACTIVITY:
+                continue
+            asking[row["session_id"]] = cls._as_epoch(row["created_at"])
+        return asking
+
+    @staticmethod
+    def _as_epoch(raw: str | None) -> float:
+        """Parse the app's ISO-8601 UTC timestamps into epoch seconds."""
+        if not raw:
+            return 0.0
+        try:
+            text = str(raw).strip().replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return 0.0
+        if parsed.tzinfo is None:
+            # The app writes UTC. Letting Python assume local time here would
+            # shift the timestamp by the offset and either retire a live
+            # question early or leave a stale one blinking for hours.
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
 
     @staticmethod
     def _fetch_sessions(

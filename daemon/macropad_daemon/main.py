@@ -111,8 +111,14 @@ class Daemon:
         self._push_states()
 
     def _on_pad_connect(self) -> None:
-        if self.cfg.palette:
-            self.link.send({"t": "palette", "v": self.cfg.palette})
+        # Send the palette entries for states the pad's firmware may predate.
+        # Without this a slot resolving to one of them is silently ignored by
+        # the firmware, which validates incoming states against its palette --
+        # so the LED would keep showing the previous state and the new one
+        # would appear simply not to work.
+        palette = dict(NEW_STATE_PALETTE)
+        palette.update(self.cfg.palette or {})
+        self.link.send({"t": "palette", "v": palette})
         if self.cfg.brightness is not None:
             self.link.send({"t": "brightness", "v": self.cfg.brightness})
         self._last_pushed = None
@@ -361,9 +367,20 @@ STATE_COLOURS = {
     "working": "blue, breathing",
     "unread": "green, solid",
     "needs_approval": "orange, blinking",
+    "interrupted": "red, blinking",
     "error": "red, solid",
     "idle": "dim white",
     "empty": "off",
+}
+
+#: Palette entries for states newer than some flashed firmware.
+#:
+#: The pad validates incoming states against its own palette and ignores any it
+#: does not recognise, so a slot resolving to a state the firmware predates
+#: would silently keep showing the previous colour. Sending these on connect
+#: means a new state works without reflashing the pad.
+NEW_STATE_PALETTE = {
+    "interrupted": [[255, 20, 20], "pulse"],
 }
 
 

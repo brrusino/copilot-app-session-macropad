@@ -95,6 +95,10 @@ PALETTE = {
     "working":        ((0, 80, 255),    "breathe"),
     "unread":         ((0, 230, 60),    "solid"),
     "needs_approval": ((255, 110, 0),   "pulse"),
+    # Stopped part-way and waiting for a nudge. Blinking rather than solid so
+    # it cannot be confused with a plain error, and red rather than amber so it
+    # cannot be confused with a session asking you a question.
+    "interrupted":    ((255, 20, 20),   "pulse"),
     "error":          ((255, 20, 20),   "solid"),
     # Shown on every session key when the host daemon is not connected.
     # Deliberately a different HUE to idle, not just dimmer: "the daemon is

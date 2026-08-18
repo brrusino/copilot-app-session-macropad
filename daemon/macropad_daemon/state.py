@@ -37,9 +37,10 @@ IDLE = "idle"
 WORKING = "working"
 UNREAD = "unread"
 NEEDS_APPROVAL = "needs_approval"
+INTERRUPTED = "interrupted"
 ERROR = "error"
 
-ALL_STATES = (EMPTY, IDLE, WORKING, UNREAD, NEEDS_APPROVAL, ERROR)
+ALL_STATES = (EMPTY, IDLE, WORKING, UNREAD, NEEDS_APPROVAL, INTERRUPTED, ERROR)
 
 #: How long a session keeps showing "working" after ``is_running`` goes false.
 #:
@@ -88,6 +89,11 @@ class SessionOverlay:
     #: Set on agentStop so the slot can go green before the app records unread.
     unread_hint: bool = False
     unread_hint_at: float = 0.0
+    #: Wall-clock time of the last hook showing this session doing work.
+    #:
+    #: Wall clock rather than monotonic on purpose: this is compared against
+    #: timestamps from the app's activity feed, which are absolute.
+    worked_wall: float = 0.0
 
     def clear(self) -> None:
         self.working = False
@@ -127,6 +133,12 @@ class StateStore:
         if event_type in WORKING_EVENTS:
             overlay.working = True
             overlay.working_at = now
+            # Wall clock too, so this can be compared against the app's
+            # activity feed. That is what retires a question: the app writes no
+            # new activity item until the whole turn ends, so answering a
+            # question leaves agent_asking as the newest item for minutes. A
+            # hook is the only prompt evidence that work has resumed.
+            overlay.worked_wall = time.time()
             # Fresh activity supersedes a previous failure and clears the
             # optimistic unread we may have set when the last turn ended.
             overlay.error = False
@@ -218,8 +230,14 @@ class StateStore:
         # Asking outranks working, and must: a session sitting on a question
         # still reports is_running, so letting working win meant a slot that was
         # blocked on you showed as busy and you never knew it wanted an answer.
-        if session.asking:
+        if self._is_asking(session, overlay):
             return NEEDS_APPROVAL
+
+        # An interrupted session has stopped part-way and will not resume until
+        # you nudge it, so it must outrank working too -- a slot frozen
+        # mid-task otherwise sits there looking busy indefinitely.
+        if session.was_interrupted:
+            return INTERRUPTED
 
         if self._is_working(session, overlay):
             return WORKING
@@ -228,6 +246,25 @@ class StateStore:
             return UNREAD
 
         return IDLE
+
+    def _is_asking(self, session: PinnedSession, overlay: SessionOverlay | None) -> bool:
+        """Whether a slot is still waiting on you to answer something.
+
+        The database says a question was asked but cannot say it was answered:
+        the app writes no new activity item until the whole turn finishes, so
+        ``agent_asking`` stays the newest item for as long as the answer takes
+        to work through -- measured at over twenty minutes on a long turn. Left
+        at that, the slot blinks orange the entire time you are watching it
+        work, which is precisely the false alarm this state exists to avoid.
+
+        Hooks are the missing evidence. Any tool call or prompt after the
+        question was asked means work resumed, so the question is behind us.
+        """
+        if not session.asking:
+            return False
+        if overlay is not None and overlay.worked_wall > session.asking_at:
+            return False
+        return True
 
     def _is_working(self, session: PinnedSession, overlay: SessionOverlay | None) -> bool:
         """Whether a slot should show as working.
