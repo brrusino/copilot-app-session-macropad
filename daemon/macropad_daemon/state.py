@@ -67,6 +67,7 @@ class SessionOverlay:
     #: decide whether hooks or the database win.
     working_at: float = 0.0
     pending_approval: bool = False
+    pending_approval_at: float = 0.0
     error: bool = False
     #: Set on agentStop so the slot can go green before the app records unread.
     unread_hint: bool = False
@@ -116,7 +117,15 @@ class StateStore:
                 overlay.pending_approval = False
 
         elif event_type == EVENT_PERMISSION:
+            # This fires before EVERY tool call, not only when a human is
+            # asked. Captured payloads confirm there is no field marking one
+            # from the other, so whether it means "blocked on you" depends on
+            # the session's auto_approve setting -- decided at render time.
             overlay.pending_approval = True
+            overlay.pending_approval_at = now
+            # A tool is starting, so the session is demonstrably working.
+            overlay.working = True
+            overlay.working_at = now
 
         elif event_type == EVENT_AGENT_STOP:
             overlay.working = False
@@ -170,7 +179,12 @@ class StateStore:
         # outright. Approval outranks error: it is the one state that blocks
         # progress until you act.
         if overlay is not None:
-            if overlay.pending_approval:
+            if overlay.pending_approval and not session.auto_approve:
+                # Only sessions that actually ask can be blocked on you. When a
+                # session auto-approves, permissionRequest fires on every tool
+                # call and means nothing more than "work is happening" --
+                # rendering that as "needs approval" made the LED blink orange
+                # continuously throughout normal operation.
                 return NEEDS_APPROVAL
             if overlay.error:
                 return ERROR

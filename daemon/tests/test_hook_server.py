@@ -181,6 +181,9 @@ def test_end_to_end_hook_changes_slot_colour(server):
                 is_running=False,
                 unread=False,
                 was_interrupted=False,
+                # A session that actually asks, so an approval prompt is a real
+                # block rather than an auto-approved tool call.
+                auto_approve=False,
             )
         ],
         now=100.0,

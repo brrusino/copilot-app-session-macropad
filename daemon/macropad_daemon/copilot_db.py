@@ -59,6 +59,10 @@ class PinnedSession:
     is_running: bool
     unread: bool
     was_interrupted: bool
+    #: Whether this session approves tool use without asking. When it does, a
+    #: ``permissionRequest`` hook never blocks on a human, so it must not be
+    #: rendered as "needs approval".
+    auto_approve: bool = True
 
     @property
     def focusable(self) -> bool:
@@ -268,6 +272,7 @@ class CopilotDB:
                         is_running=running,
                         unread=has_unread,
                         was_interrupted=bool(row["was_interrupted"]),
+                        auto_approve=bool(row["auto_approve"]),
                     )
                 )
                 continue
@@ -284,6 +289,7 @@ class CopilotDB:
                     is_running=bool(session["is_running"]),
                     unread=pin in unread,
                     was_interrupted=bool(session["was_interrupted"]),
+                    auto_approve=bool(session["auto_approve"]),
                 )
             )
         return resolved
@@ -297,7 +303,7 @@ class CopilotDB:
             return {}
         placeholders = ",".join("?" * len(ids))
         sql = f"""
-            SELECT id, title, is_running, was_interrupted, archived_at
+            SELECT id, title, is_running, was_interrupted, archived_at, auto_approve
             FROM sessions
             WHERE id IN ({placeholders})
         """
@@ -321,6 +327,7 @@ class CopilotDB:
                 s.title             AS session_title,
                 s.is_running        AS is_running,
                 s.was_interrupted   AS was_interrupted,
+                s.auto_approve      AS auto_approve,
                 s.archived_at       AS session_archived_at
             FROM workspaces w
             LEFT JOIN sessions s ON s.id = w.session_id

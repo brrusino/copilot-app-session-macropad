@@ -21,6 +21,7 @@ def session(
     is_running=False,
     unread=False,
     name="demo",
+    auto_approve=False,
 ):
     return PinnedSession(
         slot=slot,
@@ -30,6 +31,7 @@ def session(
         is_running=is_running,
         unread=unread,
         was_interrupted=False,
+        auto_approve=auto_approve,
     )
 
 
@@ -68,9 +70,30 @@ def test_unread_from_database():
 
 
 def test_permission_request_shows_needs_approval():
-    store = store_with(session())
+    """A session that actually asks should go amber."""
+    store = store_with(session(auto_approve=False))
     store.apply_hook("permissionRequest", "sess-a", now=101.0)
     assert store.slot_states()[0] == NEEDS_APPROVAL
+
+
+def test_auto_approving_session_never_shows_needs_approval():
+    """Regression test for the LED blinking orange throughout normal work.
+
+    permissionRequest fires before EVERY tool call, and captured payloads carry
+    no field distinguishing "a human must answer" from "auto-approved". When a
+    session auto-approves, nobody is ever blocked, so the only honest reading is
+    that work is happening.
+    """
+    store = store_with(session(auto_approve=True))
+    store.apply_hook("permissionRequest", "sess-a", now=101.0)
+    assert store.slot_states()[0] == WORKING
+
+
+def test_permission_request_implies_work_is_happening():
+    """A tool is starting, so the session is demonstrably active."""
+    store = store_with(session(auto_approve=True, is_running=False), at=100.0)
+    store.apply_hook("permissionRequest", "sess-a", now=101.0)
+    assert store.slot_states()[0] == WORKING
 
 
 def test_error_event_shows_error():
