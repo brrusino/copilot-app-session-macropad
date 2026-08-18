@@ -92,7 +92,12 @@ if _serial is not None:
     _serial.timeout = 0
     _serial.write_timeout = 0
 
-_rx = bytearray()
+#: Inbound byte buffer. Deliberately ``bytes`` rebuilt by slicing rather than a
+#: bytearray mutated in place: CircuitPython's bytearray does NOT support slice
+#: deletion (``del buf[:n]`` raises TypeError), unlike CPython. That difference
+#: crashed the firmware the instant the host sent its first message, which took
+#: the LEDs and the dictation chord down with it.
+_rx = b""
 _RX_LIMIT = 4096
 
 
@@ -117,25 +122,27 @@ def _send(obj):
 
 def _drain_serial(handler):
     """Read whatever is waiting and dispatch each complete line."""
+    global _rx
+
     if _serial is None:
         return
     try:
         waiting = _serial.in_waiting
         if waiting:
-            _rx.extend(_serial.read(waiting))
+            _rx += _serial.read(waiting)
     except Exception:
         return
 
     # Runaway garbage must not eat all of RAM.
     if len(_rx) > _RX_LIMIT:
-        del _rx[:-_RX_LIMIT]
+        _rx = _rx[-_RX_LIMIT:]
 
     while True:
         idx = _rx.find(b"\n")
         if idx < 0:
             break
-        raw = bytes(_rx[:idx])
-        del _rx[: idx + 1]
+        raw = _rx[:idx]
+        _rx = _rx[idx + 1:]
         if not raw.strip():
             continue
         try:

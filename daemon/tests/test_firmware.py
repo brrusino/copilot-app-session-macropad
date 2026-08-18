@@ -148,6 +148,65 @@ def test_entry_point_is_not_guarded_on_dunder_name():
     assert "_TEST_IMPORT" in body
 
 
+def test_no_slice_deletion_on_buffers():
+    """CircuitPython's bytearray does not support slice deletion.
+
+    `del buf[:n]` raises TypeError on the device but works fine in CPython, so
+    the host test suite cannot catch it by execution. It crashed the firmware
+    the instant the daemon sent its first message, taking the LEDs and the
+    dictation chord down with it. Assert on the source instead.
+    """
+    source = (FIRMWARE_DIR / "code.py").read_text(encoding="utf-8")
+    body = "\n".join(
+        line for line in source.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "del _rx" not in body
+    # The inbound buffer must be immutable bytes rebuilt by slicing.
+    assert "_rx = b\"\"" in body or "_rx = b''" in body
+
+
+def test_inbound_buffer_reassembles_frames(firmware):
+    """The rewritten buffering must still split frames correctly."""
+    seen = []
+    firmware._rx = b""
+
+    class FakeSerial:
+        def __init__(self, chunks):
+            self.chunks = list(chunks)
+
+        @property
+        def in_waiting(self):
+            return len(self.chunks[0]) if self.chunks else 0
+
+        def read(self, _n):
+            return self.chunks.pop(0) if self.chunks else b""
+
+    firmware._serial = FakeSerial([b'{"t":"hb"}\n{"t":"sta', b'te","k":1,"s":"idle"}\n'])
+    firmware._drain_serial(seen.append)
+    firmware._drain_serial(seen.append)
+
+    assert seen[0] == {"t": "hb"}
+    assert seen[1] == {"t": "state", "k": 1, "s": "idle"}
+    assert firmware._rx == b""
+
+
+def test_inbound_buffer_is_bounded(firmware):
+    """Runaway input must not grow without bound."""
+    firmware._rx = b""
+
+    class Flood:
+        @property
+        def in_waiting(self):
+            return 8192
+
+        def read(self, _n):
+            return b"x" * 8192
+
+    firmware._serial = Flood()
+    firmware._drain_serial(lambda msg: None)
+    assert len(firmware._rx) <= firmware._RX_LIMIT
+
+
 # --- layout ---------------------------------------------------------------
 
 
