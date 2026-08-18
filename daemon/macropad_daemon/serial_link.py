@@ -210,7 +210,14 @@ class SerialLink:
 
     def _discover(self) -> str | None:
         if self._configured_port:
-            return self._configured_port if probe(self._configured_port, self._baud) else None
+            # Trust an explicitly configured port rather than probing it.
+            #
+            # Probing opens and closes the port, and an RDP-redirected port does
+            # not reliably survive that -- the next read fails with EOF until the
+            # redirection re-establishes. Pinning the port is precisely how a
+            # user says "stop guessing", so honour it and let the read loop
+            # handle a port that turns out to be wrong.
+            return self._configured_port
         for port in candidate_ports():
             if self._stop.is_set():
                 return None
@@ -236,8 +243,26 @@ class SerialLink:
 
             try:
                 self._serial = serial.Serial(port, self._baud, timeout=0.2)
+                # CircuitPython only writes to a data port it considers
+                # connected, and that reflects DTR. Without this the pad stays
+                # silent even though the link is otherwise fine.
+                try:
+                    self._serial.dtr = True
+                except (OSError, serial.SerialException):
+                    pass
             except (serial.SerialException, OSError) as exc:
-                log.warning("could not open %s: %s", port, exc)
+                if "Access is denied" in str(exc) or getattr(exc, "errno", None) == 13:
+                    # Either another process holds it, or -- common with an
+                    # RDP-redirected port -- the redirection wedged because a
+                    # process died while holding it open. Reconnecting the RDP
+                    # session clears it.
+                    log.warning(
+                        "%s is busy: another process may hold it, or the RDP "
+                        "redirection has wedged. Reconnect the RDP session to reset it.",
+                        port,
+                    )
+                else:
+                    log.warning("could not open %s: %s", port, exc)
                 self._stop.wait(RECONNECT_DELAY)
                 continue
 
@@ -260,7 +285,18 @@ class SerialLink:
         buffer = b""
         while not self._stop.is_set() and handle is not None and handle.is_open:
             try:
-                chunk = handle.read(256)
+                # Poll in_waiting rather than issuing a blocking read.
+                #
+                # A blocking read on an RDP-redirected COM port fails with
+                # "GetOverlappedResult failed / Reached the end of the file"
+                # even when the link is healthy, which made the daemon drop and
+                # reconnect roughly once a second. Reading only what is already
+                # buffered avoids the overlapped-IO path entirely.
+                waiting = handle.in_waiting
+                if not waiting:
+                    time.sleep(0.02)
+                    continue
+                chunk = handle.read(waiting)
             except (serial.SerialException, OSError):
                 return
             if not chunk:

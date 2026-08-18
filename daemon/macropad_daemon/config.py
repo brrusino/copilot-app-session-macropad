@@ -92,13 +92,18 @@ class Config:
 
 
 def _candidate_paths() -> list[Path]:
+    """Config locations, highest precedence first.
+
+    The user's own config must win over the repo's ``config/macropad.toml``,
+    which is only a documented template. Checking the repo first meant a
+    checked-out copy silently shadowed real settings in ``~/.copilot``.
+    """
     paths: list[Path] = []
     env = os.environ.get("MACROPAD_CONFIG")
     if env:
         paths.append(Path(env))
-    repo_config = Path(__file__).resolve().parents[2] / "config" / "macropad.toml"
-    paths.append(repo_config)
     paths.append(Path.home() / ".copilot" / "macropad.toml")
+    paths.append(Path(__file__).resolve().parents[2] / "config" / "macropad.toml")
     return paths
 
 
