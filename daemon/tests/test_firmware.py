@@ -83,6 +83,14 @@ def _install_stubs(monkeypatch):
     for _n in range(13, 25):
         setattr(Keycode, "F%d" % _n, 0x68 + (_n - 13))
 
+    # Real HID usage codes for the digit row, matching adafruit_hid. These are
+    # what Ctrl+<n> is built from, so a wrong value here would silently switch
+    # to the wrong session.
+    for _i, _name in enumerate(
+        ("ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE")
+    ):
+        setattr(Keycode, _name, 0x1E + _i)
+
     keycode_mod.Keycode = Keycode
     monkeypatch.setitem(sys.modules, "adafruit_hid", hid_pkg)
     monkeypatch.setitem(sys.modules, "adafruit_hid.keyboard", keyboard_mod)
@@ -443,64 +451,79 @@ def test_key_events_carry_role_metadata(firmware):
     assert described["action"] == fw_config.ACTION_KEYS[action_key]
 
 
-# --- function-key fallback ------------------------------------------------
-# Used when the daemon cannot see the pad's serial port; the pad types F13-F24
-# and RDP carries the keystrokes into the remote session.
+# --- the app's Ctrl+<n> shortcut ------------------------------------------
+# The pad types the switch itself. The daemon cannot: SendInput reaches
+# nothing unless it happens to run on the interactive desktop, and over RDP
+# the keyboard belongs to the client machine anyway.
 
 
-def test_function_keys_off_by_default(firmware):
+def test_shortcuts_on_by_default(firmware):
     import config as fw_config
 
-    assert fw_config.SEND_FUNCTION_KEYS is False
+    assert fw_config.SEND_SESSION_SHORTCUTS is True
 
 
-def test_session_slots_map_to_f13_upwards(firmware):
+def test_session_slots_map_to_the_digit_row(firmware):
     import config as fw_config
 
-    first = firmware._function_key_for(fw_config.SESSION_KEYS[0])
-    eighth = firmware._function_key_for(fw_config.SESSION_KEYS[7])
-    assert first == 0x68           # F13
-    assert eighth == 0x68 + 7      # F20
+    assert firmware._shortcut_for(fw_config.SESSION_KEYS[0]) == 0x1E   # 1
+    assert firmware._shortcut_for(fw_config.SESSION_KEYS[7]) == 0x25   # 8
 
 
-def test_actions_continue_after_the_slots(firmware):
+def test_every_slot_maps_to_a_distinct_digit(firmware):
+    """Two slots sharing a digit would silently switch to the wrong session."""
     import config as fw_config
 
-    first_action = firmware._function_key_for(fw_config.ROWS[2][0])
-    last_action = firmware._function_key_for(fw_config.ROWS[2][3])
-    assert first_action == 0x68 + 8   # F21
-    assert last_action == 0x68 + 11   # F24
-
-
-def test_every_mapped_key_is_unique(firmware):
-    """Two keys sharing an F-key would silently trigger the wrong thing."""
-    import config as fw_config
-
-    keys = list(fw_config.SESSION_KEYS) + list(fw_config.ROWS[2])
-    codes = [firmware._function_key_for(k) for k in keys]
+    codes = [firmware._shortcut_for(k) for k in fw_config.SESSION_KEYS]
     assert None not in codes
     assert len(set(codes)) == len(codes)
 
 
-def test_dictation_and_free_keys_send_no_function_key(firmware):
+def test_non_session_keys_send_no_shortcut(firmware):
+    """Ctrl+<n> means "switch session"; nothing else may claim it."""
     import config as fw_config
 
-    assert firmware._function_key_for(fw_config.DICTATION_KEYS[0]) is None
-    assert firmware._function_key_for(fw_config.FREE_KEYS[0]) is None
+    assert firmware._shortcut_for(fw_config.DICTATION_KEYS[0]) is None
+    assert firmware._shortcut_for(fw_config.FREE_KEYS[0]) is None
+    assert firmware._shortcut_for(fw_config.ROWS[2][0]) is None
 
 
-def test_no_keystroke_sent_when_disabled(firmware):
+def test_pressing_a_session_key_types_the_shortcut(firmware):
     import config as fw_config
 
+    firmware._on_down(fw_config.SESSION_KEYS[3], 0.0)
+    sends = [e for e in firmware._test_keyboard.history if e[0] == "send"]
+    assert sends == [("send", ("LEFT_CONTROL", 0x21))]   # left ctrl + 4
+
+
+def test_the_press_event_says_the_pad_already_typed_it(firmware):
+    """Otherwise the daemon switches a second time, or fires the slow link."""
+    import config as fw_config
+
+    sent = []
+    firmware._send = lambda msg: sent.append(msg)
+    firmware._on_down(fw_config.SESSION_KEYS[0], 0.0)
+    assert sent and sent[-1].get("typed") is True
+
+
+def test_a_failed_keystroke_leaves_the_host_to_do_it(firmware):
+    """If the pad could not type it, the daemon must not assume it did."""
+    import config as fw_config
+
+    def boom(*_a, **_k):
+        raise RuntimeError("no HID")
+
+    firmware._keyboard.send = boom
+    sent = []
+    firmware._send = lambda msg: sent.append(msg)
+    firmware._on_down(fw_config.SESSION_KEYS[0], 0.0)
+    assert sent and "typed" not in sent[-1]
+
+
+def test_shortcuts_can_be_turned_off(firmware, monkeypatch):
+    import config as fw_config
+
+    monkeypatch.setattr(firmware, "_SEND_SHORTCUTS", False)
     firmware._on_down(fw_config.SESSION_KEYS[0], 0.0)
     sends = [e for e in firmware._test_keyboard.history if e[0] == "send"]
     assert sends == []
-
-
-def test_keystroke_sent_when_enabled(firmware, monkeypatch):
-    import config as fw_config
-
-    monkeypatch.setattr(firmware, "_SEND_FKEYS", True)
-    firmware._on_down(fw_config.SESSION_KEYS[3], 0.0)
-    sends = [e for e in firmware._test_keyboard.history if e[0] == "send"]
-    assert sends == [("send", (0x68 + 3,))]

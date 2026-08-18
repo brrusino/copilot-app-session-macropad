@@ -62,26 +62,28 @@ def _resolve_chord(names):
 
 _CHORD = _resolve_chord(getattr(config, "DICTATION_CHORD", ("LEFT_CONTROL", "LEFT_GUI")))
 
-# Optional keystroke fallback. F13-F24 are real HID keycodes that no physical
-# keyboard emits and essentially nothing binds, so they survive RDP without
-# colliding with anything you actually type.
-_SEND_FKEYS = bool(getattr(config, "SEND_FUNCTION_KEYS", False))
-_FKEYS = tuple(
-    getattr(Keycode, "F%d" % n, None) for n in range(13, 25)
-)
+# Session keys type the app's own Ctrl+<n> shortcut directly, as a real USB
+# keyboard would.
+#
+# This is deliberately NOT done by the host daemon. The daemon can only
+# synthesise input with SendInput, which reaches nothing unless the daemon
+# happens to sit on the interactive desktop -- and over RDP it is the client
+# machine, not the daemon's machine, that owns the keyboard. Typing the chord
+# here is the same path the dictation chord already proved works: the pad is a
+# USB keyboard, so RDP forwards its keystrokes like any other.
+_SEND_SHORTCUTS = bool(getattr(config, "SEND_SESSION_SHORTCUTS", True))
+_SHORTCUT_MODIFIER = Keycode.LEFT_CONTROL
+_DIGIT_NAMES = ("ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE")
+_DIGITS = tuple(getattr(Keycode, name, None) for name in _DIGIT_NAMES)
 
 
-def _function_key_for(key_number):
-    """F13-F20 for session slots, F21-F24 for actions. None if unmapped."""
-    if key_number in config.SESSION_KEYS:
-        index = config.SESSION_KEYS.index(key_number)
-    elif key_number in config.ACTION_KEYS:
-        # Row 3, left to right, continuing after the eight session slots.
-        index = SLOT_COUNT + config.ROWS[2].index(key_number)
-    else:
+def _shortcut_for(key_number):
+    """``Ctrl+<n>`` for the nth session slot. None if the key is not a slot."""
+    if key_number not in config.SESSION_KEYS:
         return None
-    if 0 <= index < len(_FKEYS):
-        return _FKEYS[index]
+    index = config.SESSION_KEYS.index(key_number)
+    if 0 <= index < len(_DIGITS) and _DIGITS[index] is not None:
+        return _DIGITS[index]
     return None
 
 # --- serial ---------------------------------------------------------------
@@ -343,16 +345,23 @@ def _on_down(key_number, now):
         # whether the press registered at all.
         _press_flash[key_number] = now + _PRESS_FLASH_MAX
 
-    if _SEND_FKEYS:
-        keycode = _function_key_for(key_number)
-        if keycode is not None:
+    typed = False
+    if _SEND_SHORTCUTS:
+        digit = _shortcut_for(key_number)
+        if digit is not None:
             try:
-                _keyboard.send(keycode)
+                _keyboard.send(_SHORTCUT_MODIFIER, digit)
+                typed = True
             except Exception:
-                # A failed keystroke must not break the serial path too.
+                # A failed keystroke must not break the serial path too, and
+                # leaving `typed` false lets the host fall back to doing the
+                # switch itself.
                 pass
 
     event = {"t": "down", "k": key_number}
+    if typed:
+        # Tell the host the switch is already done, so it does not repeat it.
+        event["typed"] = True
     event.update(_describe(key_number))
     _send(event)
 

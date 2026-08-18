@@ -63,23 +63,21 @@ DICTATION_CHORD = ("LEFT_CONTROL", "LEFT_GUI")
 # host so they can be bound later without a reflash.
 FREE_KEYS = (ROWS[3][2], ROWS[3][3])
 
-# Also type F13-F24 when a session or action key is pressed.
+# Type the app's own Ctrl+<n> shortcut when a session key is pressed.
 #
-# Leave this False for a normal setup: the pad talks to the daemon over USB
-# serial, which carries key presses AND LED state.
+# This is how session switching actually happens, and it belongs on the pad
+# rather than in the daemon. The daemon can only synthesise keystrokes with
+# SendInput, which silently reaches nothing unless the daemon happens to be
+# running on the interactive desktop -- and over RDP the keyboard belongs to
+# the client machine, not the one the daemon runs on. The pad is a real USB
+# keyboard, so RDP forwards what it types like any other key. The dictation
+# chord already proved that path works.
 #
-# Set it True only as a fallback for when the daemon cannot see the pad's serial
-# port at all -- typically a locked-down machine where RDP COM port redirection
-# is unavailable. Because the pad is also a keyboard, RDP forwards these
-# keystrokes to the remote session and the daemon can pick them up as global
-# hotkeys with nothing installed on the local machine.
+# The serial link is still what carries LED state back, and the daemon still
+# sees the press; it just no longer tries to perform the switch itself.
 #
-# It is input-only: a keyboard has no return path, so the LEDs stay on their
-# "disconnected" colour. Pair with `transport = "hid"` on the daemon.
-#
-#   F13-F20 -> session slots 0-7
-#   F21-F24 -> approve / interrupt / next attention / new session
-SEND_FUNCTION_KEYS = False
+#   Ctrl+1 .. Ctrl+8 -> session slots 0-7, in pinned order
+SEND_SESSION_SHORTCUTS = True
 
 # Global brightness scale applied to every colour, 0.0-1.0.
 BRIGHTNESS = 0.6

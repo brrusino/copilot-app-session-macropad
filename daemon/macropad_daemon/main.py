@@ -136,7 +136,9 @@ class Daemon:
 
         role = message.get("role")
         if role == "session":
-            self._activate_session(message.get("slot"))
+            self._activate_session(
+                message.get("slot"), typed_by_pad=bool(message.get("typed"))
+            )
         elif role == "action":
             self._run_action(str(message.get("action") or ""))
         elif role == "free":
@@ -144,7 +146,7 @@ class Daemon:
 
     # -- actions ---------------------------------------------------------
 
-    def _activate_session(self, slot) -> None:
+    def _activate_session(self, slot, typed_by_pad: bool = False) -> None:
         if not isinstance(slot, int):
             return
         session = self.store.session_for_slot(slot)
@@ -153,8 +155,14 @@ class Daemon:
             self.link.send({"t": "busy_done", "k": slot})
             return
         self._last_session_slot = slot
-        log.info("focus slot %s -> %s", slot, session.name)
-        actions.switch_to_slot(slot, session.session_id or "")
+        if typed_by_pad:
+            # The pad already typed Ctrl+<n> itself, which is what performs the
+            # switch. Doing it again here would either switch twice or, worse,
+            # fire the slow deep link alongside the fast keystroke.
+            log.info("slot %s -> %s (typed by the pad)", slot, session.name)
+        else:
+            log.info("focus slot %s -> %s", slot, session.name)
+            actions.switch_to_slot(slot, session.session_id or "")
         # The pad pulses white until told the navigation landed. Watch for it
         # off-thread so the key/LED path is never blocked by a slow app.
         threading.Thread(
