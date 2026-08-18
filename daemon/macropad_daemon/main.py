@@ -301,15 +301,22 @@ def hook_server_for(cfg: config_module.Config, callback):
 
 def _quit_running_daemon(cfg: config_module.Config) -> int:
     """Ask a running daemon to stop, and wait until its port is released."""
+    import http.client
     import urllib.error
     import urllib.request
 
     url = f"http://{cfg.hook_host}:{cfg.hook_port}/quit"
     try:
         urllib.request.urlopen(urllib.request.Request(url, method="POST"), timeout=3)
+    except (ConnectionResetError, http.client.HTTPException):
+        # Expected: the daemon begins shutting down as soon as it has answered,
+        # so the socket can close before the reply is fully read. The health
+        # poll below is what actually decides whether it stopped.
+        pass
     except urllib.error.URLError as exc:
-        print(f"no daemon answered on {cfg.hook_host}:{cfg.hook_port} ({exc.reason})")
-        return 1
+        if not isinstance(exc.reason, ConnectionResetError):
+            print(f"no daemon answered on {cfg.hook_host}:{cfg.hook_port} ({exc.reason})")
+            return 1
 
     # Wait for the hook port to actually close, which only happens after the
     # serial port has been closed too. Reporting success earlier would invite a
@@ -321,7 +328,7 @@ def _quit_running_daemon(cfg: config_module.Config) -> int:
             urllib.request.urlopen(
                 f"http://{cfg.hook_host}:{cfg.hook_port}/health", timeout=1
             )
-        except urllib.error.URLError:
+        except (urllib.error.URLError, ConnectionResetError, http.client.HTTPException):
             print("daemon stopped")
             return 0
     print("daemon acknowledged the request but is still running")
