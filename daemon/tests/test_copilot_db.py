@@ -16,7 +16,10 @@ CREATE TABLE sessions (
     is_running INTEGER DEFAULT 0,
     was_interrupted INTEGER DEFAULT 0,
     archived_at TEXT,
-    auto_approve INTEGER DEFAULT 0
+    auto_approve INTEGER DEFAULT 0,
+    total_input_tokens INTEGER,
+    total_output_tokens INTEGER,
+    context_current_tokens INTEGER
 );
 CREATE TABLE workspaces (
     id TEXT PRIMARY KEY,

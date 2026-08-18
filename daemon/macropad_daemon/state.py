@@ -119,6 +119,9 @@ class StateStore:
     #: Sessions whose question has already been reported as retired, so the
     #: measurement is logged once rather than on every reconcile tick.
     _retired: set[str] = field(default_factory=set)
+    #: Activity counter seen when each question first appeared, keyed by
+    #: (session, when it was asked) so a new question is judged on its own.
+    _question_activity: dict[tuple, int] = field(default_factory=dict)
 
     # -- inputs ----------------------------------------------------------
 
@@ -200,8 +203,20 @@ class StateStore:
         self._snapshot_at = time.monotonic() if now is None else now
 
         for session in self._sessions:
-            if session.session_id and session.is_running:
+            if not session.session_id:
+                continue
+            if session.is_running:
                 self._last_running_at[session.session_id] = self._snapshot_at
+            if session.asking:
+                # Remember how much work the session had done when the question
+                # first appeared, so later movement can retire it. Recorded here
+                # rather than at render time so the reading is taken exactly
+                # once, when the question arrives.
+                self._question_activity.setdefault(
+                    (session.session_id, session.asking_at), session.activity
+                )
+            else:
+                self._forget_question(session.session_id)
 
         # Drop overlays for sessions that are no longer pinned so the dict
         # cannot grow without bound over a long uptime.
@@ -271,29 +286,50 @@ class StateStore:
         at that, the slot blinks orange the entire time you are watching it
         work, which is precisely the false alarm this state exists to avoid.
 
-        Hooks are the missing evidence. Any tool call or prompt after the
-        question was asked means work resumed, so the question is behind us.
+        Two independent pieces of evidence retire it, and both are needed.
 
-        How long that takes depends on which hook gets there first.
-        ``userPromptSubmitted`` fires the instant you send an answer, so a typed
-        reply clears it immediately. Approving a permission prompt is not a
-        prompt submission and fires nothing, so that case waits for the next
-        ``permissionRequest`` -- which is the agent's *next* tool call, and
-        therefore as far away as the agent's next pause for thought.
+        A hook -- any tool call or prompt after the question was asked -- means
+        work resumed. But hooks only fire for sessions started *after* the hook
+        file was installed, so every older session has none, and those are
+        exactly the long-lived ones a pad key is likely to be pointed at.
+
+        So also: the session's token totals advancing. Those move while an
+        agent is executing, which it cannot be while waiting on you, and they
+        move for every session regardless of hooks. Measured at 103s of false
+        orange on a hookless session before this was added.
         """
         if not session.asking:
             return False
+
         if overlay is not None and overlay.worked_wall > session.asking_at:
-            if session.session_id not in self._retired:
-                self._retired.add(session.session_id)
-                log.info(
-                    "%s: question retired %.1fs after it was asked",
-                    session.name,
-                    overlay.worked_wall - session.asking_at,
-                )
+            self._note_retired(session, "a hook showed work resuming")
             return False
-        self._retired.discard(session.session_id)
+
+        # Compare against the activity recorded when this question first
+        # appeared, which apply_snapshot captures. Keyed on the question
+        # itself, so a *new* question from the same session starts a fresh
+        # comparison rather than inheriting the last one's answer.
+        baseline = self._question_activity.get((session.session_id, session.asking_at))
+        if baseline is not None and session.activity != baseline:
+            self._note_retired(session, "the session did more work")
+            return False
         return True
+
+    def _note_retired(self, session: PinnedSession, why: str) -> None:
+        if session.session_id in self._retired:
+            return
+        self._retired.add(session.session_id)
+        log.info(
+            "%s: question retired after %.0fs -- %s",
+            session.name,
+            max(0.0, time.time() - session.asking_at),
+            why,
+        )
+
+    def _forget_question(self, session_id: str | None) -> None:
+        self._retired.discard(session_id)
+        for key in [k for k in self._question_activity if k[0] == session_id]:
+            del self._question_activity[key]
 
     def _is_working(self, session: PinnedSession, overlay: SessionOverlay | None) -> bool:
         """Whether a slot should show as working.

@@ -34,10 +34,18 @@ from .state import StateStore
 log = logging.getLogger("macropad")
 
 #: How long to keep the pad's press pulse running while waiting for the app to
-#: focus a session. Derived from measurement, not taste: focusing was timed at
-#: ~4.5s on this machine, so this leaves generous headroom while still
-#: guaranteeing the pulse ends if navigation silently fails.
-NAVIGATION_TIMEOUT = 12.0
+#: focus a session.
+#:
+#: Derived from measurement, and re-derived once the pad started typing the
+#: app's own Ctrl+<n> instead of firing a deep link. Across 70 observed
+#: navigations, 69 completed within one second; the deep link this replaced was
+#: timed at ~4.5s, which is where the old 12s failsafe came from.
+#:
+#: The failsafe now only bounds the *failure* case -- a press whose keystroke
+#: never reached the app, which happened 7 times in that same sample and left
+#: the key pulsing white for a full 12 seconds each time. Three seconds is
+#: three times the observed p99 and cuts that visible cost fourfold.
+NAVIGATION_TIMEOUT = 3.0
 
 #: Pad protocol version this daemon needs. Bumped alongside
 #: ``FIRMWARE_VERSION`` in keybow/code.py whenever the daemon starts relying on

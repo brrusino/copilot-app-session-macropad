@@ -261,11 +261,13 @@ _action_flash = {}
 _ACTION_FLASH_SECS = 0.18
 
 #: Keys currently showing a "press registered" pulse, and when it expires.
-#: A fixed duration cannot be right here: focusing a session takes seconds and
-#: varies, so the host clears this explicitly when the app has actually
-#: navigated. The expiry is only a failsafe for a host that never replies.
+#:
+#: The host clears this explicitly once the app has actually navigated, so the
+#: expiry is only a failsafe for a host that never replies. It is deliberately
+#: longer than the host's own timeout: if the host is answering at all, its
+#: answer should be what ends the pulse.
 _press_flash = {}
-_PRESS_FLASH_MAX = 12.0
+_PRESS_FLASH_MAX = 5.0
 _PRESS_PULSE_PERIOD = 0.5
 
 # Dictation chord hold refcount. The chord engages when the first of the two

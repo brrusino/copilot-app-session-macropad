@@ -72,11 +72,32 @@ class PinnedSession:
     #: When that question was asked, as epoch seconds, so it can be retired
     #: once hooks show the session working again.
     asking_at: float = 0.0
+    #: Monotonically-ish increasing counter of work done by this session.
+    #:
+    #: Token totals advance while an agent is executing, so a change means work
+    #: is happening *now*. This is the only such signal available for a session
+    #: that fires no hooks, which is every session started before the hook file
+    #: was installed.
+    activity: int = 0
     auto_approve: bool = True
 
     @property
     def focusable(self) -> bool:
         return self.session_id is not None
+
+
+#: Columns whose sum tracks work in progress. Token totals advance while an
+#: agent is executing, which is what lets the pad see that a session resumed
+#: without needing a hook from it.
+ACTIVITY_COLUMNS = (
+    "total_input_tokens",
+    "total_output_tokens",
+    "context_current_tokens",
+)
+
+#: SQL expression summing those, tolerating the NULLs a fresh session has.
+ACTIVITY_SUM = " + ".join(f"COALESCE(s.{c}, 0)" for c in ACTIVITY_COLUMNS)
+ACTIVITY_SUM_BARE = " + ".join(f"COALESCE({c}, 0)" for c in ACTIVITY_COLUMNS)
 
 
 class CopilotDB:
@@ -331,6 +352,7 @@ class CopilotDB:
                         was_interrupted=bool(row["was_interrupted"]) or child_interrupted,
                         asking=asking_at > 0.0,
                         asking_at=asking_at,
+                        activity=int(row["activity"] or 0),
                         auto_approve=bool(row["auto_approve"]),
                     )
                 )
@@ -351,6 +373,7 @@ class CopilotDB:
                     was_interrupted=bool(session["was_interrupted"]),
                     asking=asking_at > 0.0,
                     asking_at=asking_at,
+                    activity=int(session["activity"] or 0),
                     auto_approve=bool(session["auto_approve"]),
                 )
             )
@@ -427,7 +450,8 @@ class CopilotDB:
             return {}
         placeholders = ",".join("?" * len(ids))
         sql = f"""
-            SELECT id, title, is_running, was_interrupted, archived_at, auto_approve
+            SELECT id, title, is_running, was_interrupted, archived_at, auto_approve,
+                   {ACTIVITY_SUM_BARE} AS activity
             FROM sessions
             WHERE id IN ({placeholders})
         """
@@ -452,6 +476,7 @@ class CopilotDB:
                 s.is_running        AS is_running,
                 s.was_interrupted   AS was_interrupted,
                 s.auto_approve      AS auto_approve,
+                {ACTIVITY_SUM}      AS activity,
                 s.archived_at       AS session_archived_at
             FROM workspaces w
             LEFT JOIN sessions s ON s.id = w.session_id

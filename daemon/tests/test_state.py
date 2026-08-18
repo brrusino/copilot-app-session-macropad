@@ -397,3 +397,54 @@ def test_a_tool_call_retires_a_question_the_app_still_reports():
 
     store.apply_hook("permissionRequest", "s", now=101.0)
     assert store.resolve(waiting) == WORKING
+
+def asking_session(activity=0, **kwargs):
+    return PinnedSession(
+        slot=0, workspace_id="w", session_id="s", name="demo",
+        is_running=True, unread=False, was_interrupted=False,
+        asking=True, asking_at=1_000_000.0, activity=activity,
+        auto_approve=True, **kwargs
+    )
+
+
+def test_work_retires_a_question_without_any_hook():
+    """Sessions started before the hook file was installed fire no hooks at
+    all, so hook evidence never arrives for them. Measured at 103s of false
+    orange on exactly such a session.
+    """
+    store = StateStore(slot_count=1)
+    s = asking_session(activity=100)
+    store.apply_snapshot([s])
+    assert store.resolve(s) == NEEDS_APPROVAL
+
+    worked = asking_session(activity=250)
+    store.apply_snapshot([worked])
+    assert store.resolve(worked) == WORKING
+
+
+def test_an_unanswered_question_stays_orange():
+    """Token totals do not move while the agent waits on you."""
+    store = StateStore(slot_count=1)
+    s = asking_session(activity=100)
+    store.apply_snapshot([s])
+    for _ in range(5):
+        store.apply_snapshot([s])
+        assert store.resolve(s) == NEEDS_APPROVAL
+
+
+def test_a_new_question_is_judged_on_its_own():
+    """Otherwise the previous question's answer would silently retire it."""
+    store = StateStore(slot_count=1)
+    store.apply_snapshot([asking_session(activity=100)])
+    answered = asking_session(activity=250)
+    store.apply_snapshot([answered])
+    assert store.resolve(answered) == WORKING
+
+    # A fresh question, at the same activity level it left off at.
+    second = PinnedSession(
+        slot=0, workspace_id="w", session_id="s", name="demo",
+        is_running=True, unread=False, was_interrupted=False,
+        asking=True, asking_at=1_000_500.0, activity=250, auto_approve=True,
+    )
+    store.apply_snapshot([second])
+    assert store.resolve(second) == NEEDS_APPROVAL
