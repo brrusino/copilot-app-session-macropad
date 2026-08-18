@@ -3,6 +3,8 @@
 
 import pytest
 
+from dataclasses import replace
+
 from macropad_daemon.copilot_db import PinnedSession
 from macropad_daemon.state import (
     EMPTY,
@@ -11,6 +13,7 @@ from macropad_daemon.state import (
     NEEDS_APPROVAL,
     UNREAD,
     WORKING,
+    WORKING_HOLD,
     StateStore,
 )
 
@@ -168,12 +171,20 @@ def test_agent_stop_does_not_override_a_still_running_session():
 
 
 def test_agent_stop_settles_once_the_app_agrees():
-    """When the app finally reports not-running, the turn's output is unread."""
+    """When the app finally reports not-running, the turn's output is unread.
+
+    Settling waits out ``WORKING_HOLD``: a stop is only believed once the
+    session has stayed stopped longer than the gap between two turns.
+    """
     store = store_with(session(is_running=True), at=100.0)
     store.apply_hook("agentStop", "sess-a", now=101.0)
     assert store.slot_states()[0] == WORKING
     # The app records the finished turn: no longer running, output unread.
     store.apply_snapshot([session(is_running=False, unread=True)], now=102.0)
+    assert store.slot_states()[0] == WORKING, "a brief stop is just a turn boundary"
+    store.apply_snapshot(
+        [session(is_running=False, unread=True)], now=102.0 + WORKING_HOLD
+    )
     assert store.slot_states()[0] == UNREAD
 
 
@@ -181,7 +192,9 @@ def test_app_saying_not_unread_is_believed():
     """If the app cleared unread, you have read it -- do not keep showing green."""
     store = store_with(session(is_running=True), at=100.0)
     store.apply_hook("agentStop", "sess-a", now=101.0)
-    store.apply_snapshot([session(is_running=False, unread=False)], now=102.0)
+    store.apply_snapshot(
+        [session(is_running=False, unread=False)], now=102.0 + WORKING_HOLD
+    )
     assert store.slot_states()[0] == IDLE
 
 
@@ -292,3 +305,51 @@ def test_optional_activity_events_still_understood(event):
     store = store_with(session())
     store.apply_hook(event, "sess-a", now=101.0)
     assert store.slot_states()[0] == WORKING
+
+def test_working_survives_the_gap_between_turns():
+    """A session mid-task drops to not-running between turns.
+
+    Following that literally made the LED cycle blue -> green -> blue every few
+    seconds while work was plainly still going. Measured gaps reached 5.8s.
+    """
+    store = StateStore(slot_count=2)
+    running = PinnedSession(
+        slot=0, workspace_id="w", session_id="s", name="n",
+        is_running=True, unread=True, was_interrupted=False,
+    )
+    stopped = replace(running, is_running=False)
+
+    store.apply_snapshot([running], now=100.0)
+    assert store.resolve(running) == WORKING
+
+    # Between turns: still working, even though the app says not running.
+    store.apply_snapshot([stopped], now=105.0)
+    assert store.resolve(stopped) == WORKING
+
+
+def test_working_gives_way_once_the_session_really_stops():
+    """The hold is a bridge, not a latch: a finished session must go green."""
+    store = StateStore(slot_count=2)
+    running = PinnedSession(
+        slot=0, workspace_id="w", session_id="s", name="n",
+        is_running=True, unread=True, was_interrupted=False,
+    )
+    stopped = replace(running, is_running=False)
+
+    store.apply_snapshot([running], now=100.0)
+    store.apply_snapshot([stopped], now=100.0 + WORKING_HOLD + 1)
+    assert store.resolve(stopped) == UNREAD
+
+
+def test_read_session_settles_to_idle_after_it_stops():
+    """Blue while working, green when unread and stopped, white once read."""
+    store = StateStore(slot_count=2)
+    running = PinnedSession(
+        slot=0, workspace_id="w", session_id="s", name="n",
+        is_running=True, unread=True, was_interrupted=False,
+    )
+    read_and_stopped = replace(running, is_running=False, unread=False)
+
+    store.apply_snapshot([running], now=100.0)
+    store.apply_snapshot([read_and_stopped], now=100.0 + WORKING_HOLD + 1)
+    assert store.resolve(read_and_stopped) == IDLE

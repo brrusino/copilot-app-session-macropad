@@ -201,3 +201,38 @@ def test_end_to_end_hook_changes_slot_colour(server):
             break
         time.sleep(0.02)
     assert store.slot_states()[0] == "needs_approval"
+
+def test_quit_endpoint_triggers_shutdown():
+    """Killing the daemon wedges the pad's RDP-redirected port, so it needs a
+    clean way to stop: closing the serial port is the difference between a
+    restart and a physical replug."""
+    stopped = []
+    server = HookServer("127.0.0.1", 0, lambda *a: None)
+    server.set_quit_callback(lambda: stopped.append(True))
+    server.start()
+    try:
+        port = server._server.server_address[1]
+        urllib.request.urlopen(
+            urllib.request.Request(f"http://127.0.0.1:{port}/quit", method="POST"),
+            timeout=3,
+        )
+    finally:
+        server.stop()
+    assert stopped == [True]
+
+
+def test_quit_is_not_delivered_as_a_hook_event():
+    """A shutdown must not be mistaken for session activity."""
+    events = []
+    server = HookServer("127.0.0.1", 0, lambda *a: events.append(a))
+    server.set_quit_callback(lambda: None)
+    server.start()
+    try:
+        port = server._server.server_address[1]
+        urllib.request.urlopen(
+            urllib.request.Request(f"http://127.0.0.1:{port}/quit", method="POST"),
+            timeout=3,
+        )
+    finally:
+        server.stop()
+    assert events == []

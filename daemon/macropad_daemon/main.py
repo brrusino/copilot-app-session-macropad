@@ -258,6 +258,8 @@ class Daemon:
             return 3
 
         self.link.start()
+        self._quit = threading.Event()
+        self.hooks.set_quit_callback(self._quit.set)
         log.info(
             "macropad daemon up: %s slots, reconciling every %.2fs",
             self.cfg.slot_count,
@@ -265,7 +267,7 @@ class Daemon:
         )
 
         try:
-            while True:
+            while not self._quit.is_set():
                 try:
                     self.reconcile()
                 except Exception:
@@ -277,7 +279,9 @@ class Daemon:
                 # Heartbeat so the pad knows we are alive even when nothing
                 # changed; without it the LEDs fall back to "disconnected".
                 self.link.send({"t": "hb"})
-                time.sleep(self.cfg.reconcile_interval)
+                self._quit.wait(self.cfg.reconcile_interval)
+            log.info("shutdown requested; closing the pad port cleanly")
+            return 0
         except KeyboardInterrupt:
             log.info("shutting down")
             return 0
@@ -293,6 +297,35 @@ def hook_server_for(cfg: config_module.Config, callback):
     from .hook_server import HookServer
 
     return HookServer(cfg.hook_host, cfg.hook_port, callback)
+
+
+def _quit_running_daemon(cfg: config_module.Config) -> int:
+    """Ask a running daemon to stop, and wait until its port is released."""
+    import urllib.error
+    import urllib.request
+
+    url = f"http://{cfg.hook_host}:{cfg.hook_port}/quit"
+    try:
+        urllib.request.urlopen(urllib.request.Request(url, method="POST"), timeout=3)
+    except urllib.error.URLError as exc:
+        print(f"no daemon answered on {cfg.hook_host}:{cfg.hook_port} ({exc.reason})")
+        return 1
+
+    # Wait for the hook port to actually close, which only happens after the
+    # serial port has been closed too. Reporting success earlier would invite a
+    # restart that collides with the outgoing daemon.
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        time.sleep(0.3)
+        try:
+            urllib.request.urlopen(
+                f"http://{cfg.hook_host}:{cfg.hook_port}/health", timeout=1
+            )
+        except urllib.error.URLError:
+            print("daemon stopped")
+            return 0
+    print("daemon acknowledged the request but is still running")
+    return 1
 
 def _print_status(cfg: config_module.Config) -> int:
     db = CopilotDB(cfg.db_path)
@@ -459,6 +492,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--print-hooks", action="store_true", help="print hook config JSON")
     parser.add_argument("--install-hooks", action="store_true", help="write the hook config")
+    parser.add_argument(
+        "--quit",
+        action="store_true",
+        help="ask a running daemon to shut down cleanly (do not kill it: "
+        "killing it while it holds the pad's RDP-redirected port wedges that "
+        "port until the pad is physically replugged)",
+    )
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument(
         "--log-file",
@@ -490,6 +530,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.print_hooks:
         print(json.dumps(hooks_install.build_config(cfg), indent=2))
         return 0
+
+    if args.quit:
+        return _quit_running_daemon(cfg)
 
     if args.install_hooks:
         path = hooks_install.install(cfg)

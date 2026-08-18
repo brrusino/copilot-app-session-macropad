@@ -41,6 +41,22 @@ ERROR = "error"
 
 ALL_STATES = (EMPTY, IDLE, WORKING, UNREAD, NEEDS_APPROVAL, ERROR)
 
+#: How long a session keeps showing "working" after ``is_running`` goes false.
+#:
+#: A session working through a task does not stay continuously running: it
+#: drops to not-running in the gap between turns, then resumes. Rendering that
+#: literally makes the LED cycle blue -> green -> blue every few seconds while
+#: the work is plainly still going, which is unreadable at a glance.
+#:
+#: Derived from measurement, not preference: sampling ``is_running`` every
+#: 0.2s for 60s across the pinned sessions caught six such gaps that resumed,
+#: the longest 5.8s. The hold must exceed the longest real gap or the flicker
+#: survives, so this sits at roughly 1.7x that with headroom for a slower
+#: machine. The cost is that a genuinely finished session waits this long
+#: before turning green, which is the right trade: a steady light you can read
+#: beats a fast one you cannot.
+WORKING_HOLD = 10.0
+
 # Hook event names, as emitted by the Copilot CLI hooks system.
 EVENT_SESSION_START = "sessionStart"
 EVENT_SESSION_END = "sessionEnd"
@@ -88,6 +104,9 @@ class StateStore:
     _overlays: dict[str, SessionOverlay] = field(default_factory=dict)
     _sessions: list[PinnedSession] = field(default_factory=list)
     _snapshot_at: float = 0.0
+    #: Last time each session was observed running, used to bridge the gaps
+    #: between turns. See ``WORKING_HOLD``.
+    _last_running_at: dict[str, float] = field(default_factory=dict)
 
     # -- inputs ----------------------------------------------------------
 
@@ -154,12 +173,19 @@ class StateStore:
         self._sessions = list(sessions)[: self.slot_count]
         self._snapshot_at = time.monotonic() if now is None else now
 
+        for session in self._sessions:
+            if session.session_id and session.is_running:
+                self._last_running_at[session.session_id] = self._snapshot_at
+
         # Drop overlays for sessions that are no longer pinned so the dict
         # cannot grow without bound over a long uptime.
         live = {s.session_id for s in self._sessions if s.session_id}
         for session_id in list(self._overlays):
             if session_id not in live:
                 del self._overlays[session_id]
+        for session_id in list(self._last_running_at):
+            if session_id not in live:
+                del self._last_running_at[session_id]
 
     # -- outputs ---------------------------------------------------------
 
@@ -207,9 +233,18 @@ class StateStore:
         Letting the newer hook win made the LED flap blue/white every few
         seconds throughout a long task -- measured as roughly one flip per turn
         while ``is_running`` never changed once in 45 seconds.
+
+        ``is_running`` itself is not continuous either. A session working
+        through a task drops to not-running in the gap between turns, so
+        following it literally makes the LED cycle blue/green/white while the
+        work is in fact still going. Those gaps are bridged by ``WORKING_HOLD``.
         """
         if session.is_running:
             return True
+        if session.session_id:
+            last = self._last_running_at.get(session.session_id)
+            if last is not None and (self._snapshot_at - last) < WORKING_HOLD:
+                return True
         if overlay is None:
             return False
         # A hook saw work start more recently than our last snapshot, so the

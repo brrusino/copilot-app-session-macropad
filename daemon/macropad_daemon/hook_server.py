@@ -63,6 +63,21 @@ class _Handler(BaseHTTPRequestHandler):
         parts = [p for p in self.path.split("/") if p]
         event_type = parts[-1] if parts else ""
 
+        if event_type == "quit":
+            # Ask the daemon to shut down cleanly.
+            #
+            # Killing it instead is not equivalent: the pad's serial port is
+            # RDP-redirected, and a process dying while holding it open leaves
+            # the redirection wedged, so every later open fails with "Access is
+            # denied" until the pad is physically replugged. Closing the port
+            # first is the difference between a restart and a trip to the
+            # hardware.
+            self._no_content()
+            stop = getattr(self.server, "quit_callback", None)
+            if stop is not None:
+                stop()
+            return
+
         try:
             length = min(int(self.headers.get("Content-Length") or 0), MAX_BODY_BYTES)
         except ValueError:
@@ -120,6 +135,13 @@ class HookServer:
         self._callback = callback
         self._server: _Server | None = None
         self._thread: threading.Thread | None = None
+        self._quit_callback: Callable[[], None] | None = None
+
+    def set_quit_callback(self, callback: Callable[[], None]) -> None:
+        """Called when someone POSTs to ``/quit``."""
+        self._quit_callback = callback
+        if self._server is not None:
+            self._server.quit_callback = callback  # type: ignore[attr-defined]
 
     def start(self) -> None:
         try:
@@ -130,6 +152,7 @@ class HookServer:
                 f"is probably already running ({exc})"
             ) from exc
         server.hook_callback = self._callback  # type: ignore[attr-defined]
+        server.quit_callback = self._quit_callback  # type: ignore[attr-defined]
         self._server = server
         self._thread = threading.Thread(
             target=server.serve_forever,
