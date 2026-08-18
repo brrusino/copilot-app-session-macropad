@@ -60,18 +60,10 @@ class Daemon:
 
         ``serial``  - pad's serial port is visible to this machine.
         ``network`` - a bridge relays the pad from another machine.
-        ``hid``     - the pad drives us by *typing* F13-F24, which survives RDP
-                      with nothing installed on the pad's machine. Input only:
-                      a keyboard has no return path, so there is no LED state.
 
         Imported lazily so the hardware-free modes (--status, --print-hooks,
         --install-hooks) work without pyserial installed.
         """
-        if cfg.pad_transport == "hid":
-            from .hotkey_input import HotkeyListener
-
-            return HotkeyListener(self._on_hotkey)
-
         if cfg.pad_transport == "network":
             from .network_link import NetworkLink, load_or_create_token
 
@@ -91,15 +83,6 @@ class Daemon:
             port=cfg.serial_port,
             baud=cfg.serial_baud,
         )
-
-    def _on_hotkey(self, kind: str, index: int) -> None:
-        """A pad keystroke arrived via the global-hotkey transport."""
-        from .hotkey_input import ACTIONS
-
-        if kind == "session":
-            self._activate_session(index)
-        elif kind == "action" and index < len(ACTIONS):
-            self._run_action(ACTIONS[index])
 
     # -- inputs ----------------------------------------------------------
 

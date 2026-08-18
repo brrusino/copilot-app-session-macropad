@@ -28,9 +28,27 @@ Copilot app already exposes on your machine.
 | dim white | idle |
 | blue, breathing | agent is working |
 | green | finished, output unread |
-| amber, pulsing | waiting on your approval |
-| red | the turn errored |
+| amber, pulsing | waiting on you to answer something |
+| red, blinking | interrupted part-way, needs a nudge |
+| red, solid | the turn errored |
+| white flash | your key press registered; pulses until the app has switched |
+| dim blue | the daemon isn't connected, so no state is known |
 | off | no session pinned in that slot |
+
+Two behaviours are worth knowing, because both look like bugs otherwise:
+
+- **A working session stays blue between turns.** `is_running` isn't
+  continuous — it drops to false in the gap between turns and comes back,
+  measured at up to 5.8s. Following it literally made the LED cycle
+  blue → green → blue while work was plainly still going, so a working slot
+  holds its colour across that gap. The cost is that a genuinely finished
+  session takes a few seconds to turn green.
+- **Unread is the app's own, never rolled up from children.** A parent whose
+  subagent has unread output is not itself unread, and pretending otherwise
+  produced a green light nothing could clear: one pin had 51 unread
+  descendants. Work and questions *do* roll up, because those clear
+  themselves — work stops on its own, and a question is answered from the
+  parent.
 
 ## How it works
 
@@ -41,19 +59,29 @@ keyboard. It receives *semantic* state from the host ("slot 3 is working")
 rather than pixel values, so animation runs locally, serial stays quiet, and
 the lights keep breathing even if the host stalls.
 
-**A host daemon** works out what each slot should show. It merges two sources,
-because neither is sufficient alone:
+**A host daemon** works out what each slot should show. It merges three
+sources, because none is sufficient alone:
 
 - **Copilot CLI hooks** push events the instant they happen — a turn started, a
-  turn stopped, the agent needs approval, the turn errored. Fast and precise,
-  but hooks can't see *you*: reading a session clears its unread badge inside
-  the app and no hook fires.
+  tool ran, the turn errored. Fast and precise, but hooks can't see *you*:
+  reading a session clears its unread badge inside the app and no hook fires.
 - **The app's database** is authoritative for unread state and pin order, but we
   only observe it on a poll, so it lags a fast agent.
+- **The app's activity feed** is the only place a real question is recorded.
+  `permissionRequest` fires before *every* tool call and its payload has no
+  field distinguishing a genuine question from an auto-approval, so amber comes
+  from `agent_asking` / `agent_plan_ready` in the feed instead.
 
-When the two disagree about whether a session is working, the more recent
-observation wins. That's what stops a finished agent from staying blue until the
-next poll, and stops a stale hook from pinning a slot to "working" forever.
+Where they disagree, the rules are specific rather than "newest wins":
+
+- The database is authoritative for **still running**. Hooks may only make the
+  pad react *faster* to work starting, never contradict the app into idle —
+  `agentStop` fires at the end of every turn, so letting it win made the LED
+  flap once per turn during a long task.
+- A question is retired by **hook evidence**, not by the feed. The app writes no
+  activity item until the whole turn ends, so answering a question leaves
+  `agent_asking` newest for minutes; a tool call after the question proves the
+  agent is executing again.
 
 **A hook config** at `~/.copilot/hooks/macropad.json` wires the two together.
 
@@ -61,8 +89,8 @@ next poll, and stops a stale hook from pinning a slot to "working" forever.
 
 The daemon **never writes to the Copilot app's database**. That database is live
 and in WAL mode while the app runs, so every connection is opened read-only.
-Everything that changes state goes through a surface the app owns — `ghapp://`
-deep links and OS keystrokes.
+Everything that changes state goes through a surface the app owns — its own
+keyboard shortcuts, typed by the pad, and `ghapp://` deep links.
 
 The hook config is **purely additive**. The Copilot CLI loads every `*.json` in
 its hooks directory, so installation writes only `macropad.json` and never
@@ -116,17 +144,19 @@ the pad is plugged in, and RDP forwards the chord into the session, so it lands
 right either way.
 
 If `--ports` doesn't find the pad, it prints what to check. Fall back to
-[Option 2](#using-the-network-bridge) or the
-[keystroke fallback](#keystroke-fallback).
+[the network bridge](#using-the-network-bridge) — or just accept losing the
+LEDs, since the pad types its own shortcuts and keeps working without a daemon.
 
 ### Getting the daemon and the pad connected
 
-**Dictation works regardless, and needs nothing installed.** The pad is a USB
-HID keyboard, so it types Ctrl+Win into whatever it's plugged into, and RDP
-forwards keystrokes to the remote session like any other typing.
+**Session switching and dictation work regardless, and need nothing installed.**
+The pad is a USB HID keyboard: it types the app's `Ctrl+<n>` shortcut and the
+Ctrl+Win dictation chord into whatever it's plugged into, and RDP forwards
+keystrokes to the remote session like any other typing. No daemon required for
+either.
 
-**For LED state and focus-on-press**, the daemon needs a two-way channel to the
-pad. In order of preference:
+**What the daemon adds is the LEDs** — live session state — and for that it
+needs a two-way channel to the pad. In order of preference:
 
 **Option 1: RDP COM port redirection.** ⭐ *Start here if you RDP into the
 machine running the Copilot app.*
@@ -164,10 +194,8 @@ to the daemon over TCP. `scripts/pad-bridge.ps1` needs only Windows PowerShell
 Use this when the pad's machine can run something. See
 [Using the network bridge](#using-the-network-bridge).
 
-**Option 3: keystroke fallback (input only).** If neither of the above is
-available, the pad can drive the daemon by *typing* — see
-[Keystroke fallback](#keystroke-fallback). This gets you session switching and
-actions with nothing installed anywhere, but **no LED state**, because a
+**If neither is available**, you still get session switching, actions and
+dictation — the pad types those itself. You just lose the LEDs, because a
 keyboard has no return path.
 
 ### When the pad's machine can run nothing at all
@@ -177,8 +205,8 @@ bridges. What's left:
 
 - **COM port redirection (Option 1) still works** — it's a client-side checkbox,
   not software. This is the path to try, and it gives you everything.
-- **The keystroke fallback (Option 3) still works** — the pad is a keyboard, and
-  keyboards always work. Input only.
+- **The pad keeps typing** — keyboards always work, so switching and dictation
+  survive with nothing installed anywhere. Input only, no LEDs.
 
 Ruled out, so you don't waste time on them:
 
@@ -198,34 +226,50 @@ Ruled out, so you don't waste time on them:
 - **MIDI, smart card, WebAuthn, printer redirection.** Either not an RDP
   redirection class at all (MIDI), or classes CircuitPython doesn't implement.
 
-## Keystroke fallback
+## How keystrokes reach the app
 
-Last resort, for when no data channel to the pad exists at all. The pad types
-**F13–F24** — real HID keycodes that no physical keyboard emits and essentially
-nothing binds — and the daemon picks them up as global hotkeys. RDP forwards
-them like any other typing.
+This is the part worth understanding, because it's the opposite of how the
+project started.
+
+**The pad types; the daemon never does.** Pressing a session key makes the pad
+type the app's own `Ctrl+<n>` shortcut over USB HID. The daemon's role is
+lights and bookkeeping.
+
+That isn't a stylistic choice. The daemon's only mechanism is Win32
+`SendInput`, and that reaches nothing unless the daemon happens to be running
+on the interactive desktop — sending `Win+R` from a service-like context
+produces no Run dialog at all. Over RDP it's worse in principle: the keyboard
+belongs to the machine in front of you, not the one the daemon runs on. The pad
+is a real USB keyboard, so its keystrokes are forwarded like any other. The
+dictation chord worked from day one for exactly this reason.
+
+Anything the *daemon* decides — approve, interrupt, next attention — is sent to
+the pad as a chord for the pad to type.
+
+The `ghapp://sessions/<id>` deep link is still there as a fallback for slots
+past the app's single-digit shortcuts, or when the pad is disconnected. It
+works, but it hands a URL to the shell, which spawns `github.exe` to route it:
+**measured at ~4.5s** versus about a second for the keystroke.
+
+### Shortcuts this relies on
+
+Confirmed from the app's own accessibility labels on a running instance:
 
 ```
-F13-F20  ->  session slots 1-8
-F21-F24  ->  approve / interrupt / next attention / new session
+Ctrl+<n>          select the nth pinned session   <- what the pad types
+Ctrl+B            toggle sidebar
+Ctrl+K            search
+Ctrl+Comma        settings
+Ctrl+T            add tab
+Ctrl+Alt+B        toggle review panel
+Ctrl+[ / Ctrl+]   back / forward
+Ctrl+Alt+\        open plan
 ```
 
-On the pad, in `keybow/config.py`:
-
-```python
-SEND_FUNCTION_KEYS = True
-```
-
-On the daemon:
-
-```toml
-[pad]
-transport = "hid"
-```
-
-**This is input-only.** A keyboard has no return path, so slot LEDs stay on
-their dim "disconnected" colour — honest, rather than showing state that might
-be stale. Dictation is unaffected. If you want the LEDs, you need Option 1 or 2.
+The row 3 action bindings (`approve`, `interrupt`, `new_session`) are **not**
+in that list and are unverified defaults. The app lists its full set under
+**Settings → Accessibility**; read them off there and set them in
+`[actions]` rather than trusting the defaults.
 
 ## Setup
 
@@ -410,9 +454,15 @@ for why some setups have no transport available, and what to do about it.
 
 ## Which session is on which key
 
-Keys 1-8 follow your **pinned sessions**, in sidebar order — the daemon reads
-the app's own pinned list, so re-ordering your pins re-orders the keys. Archived
-pins are skipped rather than occupying a dead slot.
+Keys 1-8 map to `Ctrl+1` … `Ctrl+8`, which is the app's own shortcut for
+selecting the nth **pinned session** — so the keys follow your pins in sidebar
+order, and re-ordering your pins re-orders the keys. Because the app resolves
+the number itself, the pad and the app can never disagree about which session
+key 3 means.
+
+The daemon reads the same pinned list to decide what each LED shows. It skips
+archived pins, and skips child sessions so a key always addresses something you
+drive directly — though a child's *work* still lights up its parent.
 
 ## Dictation
 
@@ -464,19 +514,19 @@ the only place a physical key number appears.
 tool uses something else, change `DICTATION_CHORD` in `keybow/config.py` — it
 takes Adafruit HID keycode names, so no code change is needed.
 
-**Row 3 keystrokes.** `approve`, `interrupt` and `new_session` send keystrokes
-to the app after focusing the target session. The defaults in
-`config/macropad.toml` are starting points — confirm them against the running
-app and fix them there.
+**Row 3 keystrokes.** `approve`, `interrupt` and `new_session` are typed by the
+pad on the daemon's behalf, after switching to the target session. The defaults
+in `config/macropad.toml` are **unverified guesses** — the app lists its real
+shortcuts under **Settings → Accessibility**, so read them off there and fix
+`[actions]` rather than trusting the defaults.
 
-**Watch for LED flicker at turn boundaries.** Hook-derived state is overridden
-by any *newer* database snapshot, which is what stops a stale hook from pinning
-a slot forever. The side effect is that if the app takes longer than one
-`reconcile_interval` to record `is_running`, a starting turn can briefly show
-blue, drop to white, then go blue again. This hasn't been observed with real
-sessions — the app appears to write promptly — but if you do see a flicker,
-raising `reconcile_interval` makes the window rarer and is the first thing to
-try.
+**LED timing you may notice, both deliberate.** A working session holds blue for
+a few seconds after it stops, because `is_running` drops out between turns (up
+to 5.8s measured) and following it literally made the light cycle while work was
+still going. And a question clears as soon as the agent runs its next tool, not
+when the app records the turn — the app writes nothing to its activity feed
+until the whole turn ends, which would leave the light amber for minutes after
+you'd answered.
 
 ## Troubleshooting
 
@@ -510,6 +560,27 @@ reachable from the client on `bridge_port`.
 
 **Dictation still works but nothing else does.** That's expected and by design —
 the chord is pure firmware HID, so it's unaffected by the daemon being down.
+It's also the diagnostic that matters most: if dictation types but session keys
+don't, the pad is fine and the problem is the daemon or the serial link.
+
+**Never kill the daemon — use `--quit`.**
+
+```powershell
+python -m macropad_daemon --quit
+```
+
+Over RDP the pad's port is redirected, and a process dying while holding it open
+leaves the redirection **wedged**: every later open fails with *"Access is
+denied"* and it does not clear on its own. Recovering means unplugging the pad
+or reconnecting the RDP session. `--quit` closes the port first.
+
+If it does wedge, `--ports` now says `BUSY (access denied)` rather than
+reporting the pad as missing — that distinction matters, because "not found"
+sends you looking for an unplugged pad instead of a stuck port.
+
+**Ports vanish entirely when RDP disconnects.** COM3/COM4 exist only while the
+session is connected, so `keybow not found` after you disconnect is correct, not
+a fault. The daemon reconnects on its own when you come back.
 
 ## Development
 
@@ -534,24 +605,31 @@ scripts/    install and flash helpers, plus pad_bridge.py for remote pads
 
 ## What's verified vs. what still needs your hardware
 
-Confirmed working against the live app on this machine:
+Confirmed working on real hardware, against the live app:
 
-- Pinned sessions resolve to slots in sidebar order, with real names and unread
-  flags, read-only.
-- The generated hook commands run, exit 0, emit nothing, and drive the full
-  state machine: `userPromptSubmitted` → working, `permissionRequest` →
-  needs approval, `agentStop` → unread, `errorOccurred` → error.
+- Session keys switch sessions by typing `Ctrl+<n>` — **about a second**,
+  versus ~4.5s for the deep link it replaced.
+- Pinned sessions resolve to slots in sidebar order, with real names, unread
+  flags and run state, read-only.
+- LEDs track live state, including rolling a child's *work* up to its parent.
+- The dictation chord, as a pure-firmware HID hold with a two-key refcount.
+- RDP COM port redirection carries the pad into the session; the daemon
+  discovers it on COM4 and reconnects by itself after a replug.
+- The generated hook commands run, exit 0, emit nothing, and drive the state
+  machine.
 - Installing hooks leaves every other file in `~/.copilot/hooks/` byte-identical.
-- `ghapp://sessions/<id>` focuses the session — a simulated key press through
-  the bridge navigated the app to the expected workspace.
+- Autostart via the Startup folder, and `--quit` for a clean stop.
 
-Still needs the pad in hand — see [Calibration](#calibration):
+Still unverified:
 
+- **Row 3 `approve` / `interrupt` / `new_session`.** The mechanism is fixed —
+  the pad types them now, where the daemon never could — but the bindings
+  themselves are still defaults. Read the real ones from **Settings →
+  Accessibility** and set them in `[actions]`.
+- **The `interrupted` state.** Implemented and unit-tested, but never seen
+  against real data: `was_interrupted` was false on every pinned session and all
+  61 descendants when it was checked, so the signal is unconfirmed.
 - Whether the two dictation keys land where you want them under your thumb.
-- The row 3 `approve` / `interrupt` / `new_session` keystrokes.
 
-Physical key numbering is **no longer** an unknown: it's confirmed against
-Pimoroni's PMK documentation and already correct in `keybow/config.py`.
-
-Unresolved until you try it: whether RDP COM port redirection forwards the pad
-into the session on your specific client. `--ports` answers that in one command.
+Physical key numbering is **not** an unknown: it's confirmed against Pimoroni's
+PMK documentation and already correct in `keybow/config.py`.

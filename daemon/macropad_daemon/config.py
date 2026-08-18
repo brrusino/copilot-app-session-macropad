@@ -141,9 +141,9 @@ def load(path: Path | None = None) -> Config:
 
     pad = data.get("pad", {})
     transport = str(pad.get("transport", cfg.pad_transport)).lower()
-    if transport not in ("serial", "network", "hid"):
+    if transport not in ("serial", "network"):
         raise ValueError(
-            f"[pad] transport must be 'serial', 'network' or 'hid', got {transport!r}"
+            f"[pad] transport must be 'serial' or 'network', got {transport!r}"
         )
     cfg.pad_transport = transport
     cfg.bridge_host = pad.get("bridge_host", cfg.bridge_host)

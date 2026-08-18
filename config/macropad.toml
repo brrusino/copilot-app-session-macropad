@@ -17,9 +17,6 @@
 #               bidirectional, so the LEDs work.
 #   "network" - the pad is on another machine running scripts/pad_bridge.py or
 #               scripts/pad-bridge.ps1.
-#   "hid"     - last resort. The pad TYPES F13-F24 and we catch them as global
-#               hotkeys, which needs nothing at all on the pad's machine.
-#               Input only: a keyboard has no return path, so no LED state.
 transport = "serial"
 
 # Only used when transport = "network".
