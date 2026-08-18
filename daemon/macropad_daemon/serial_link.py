@@ -34,6 +34,13 @@ EventCallback = Callable[[dict], None]
 PROBE_TIMEOUT = 3.5
 RECONNECT_DELAY = 2.0
 
+#: How long to wait for the pad to say something after we open its data port,
+#: before trying to restart its firmware over the console port.
+SILENT_PAD_TIMEOUT = 4.0
+
+#: CircuitPython's REPL: Ctrl-C interrupts, Ctrl-D reloads code.py.
+REPL_RELOAD = b"\x04"
+
 
 def registry_ports() -> list[str]:
     """Serial ports listed in the registry's SERIALCOMM map (Windows only).
@@ -280,9 +287,45 @@ class SerialLink:
                 log.info("keybow disconnected; will reconnect")
                 self._stop.wait(RECONNECT_DELAY)
 
+    def _kick_console(self, data_port: str) -> bool:
+        """Restart the pad's firmware via its REPL console port.
+
+        Two situations need this, and both are normal rather than exceptional:
+
+        * The pad is sitting at the REPL, because someone interrupted it or an
+          earlier run finished. Without a nudge it stays there indefinitely.
+        * Older firmware gated its writes on DTR, which an RDP-redirected port
+          never delivers mid-run. Restarting the firmware while we already hold
+          the data port open means DTR is high from its very first write.
+
+        A CircuitPython board exposes two CDC interfaces; the one we are not
+        using for data is the console. Sending Ctrl-D to anything else is
+        harmless -- our own protocol simply ignores an unparseable byte.
+        """
+        for candidate in registry_ports() + [i.device for i in list_ports.comports()]:
+            if candidate.upper() == data_port.upper():
+                continue
+            try:
+                with serial.Serial(candidate, self._baud, timeout=0.3) as console:
+                    try:
+                        console.dtr = True
+                    except (OSError, serial.SerialException):
+                        pass
+                    console.write(REPL_RELOAD)
+                    console.flush()
+                log.info("nudged %s to restart the pad firmware", candidate)
+                return True
+            except (serial.SerialException, OSError):
+                continue
+        return False
+
     def _read_loop(self) -> None:
         handle = self._serial
         buffer = b""
+        started = time.monotonic()
+        heard_anything = False
+        kicked = False
+
         while not self._stop.is_set() and handle is not None and handle.is_open:
             try:
                 # Poll in_waiting rather than issuing a blocking read.
@@ -294,6 +337,17 @@ class SerialLink:
                 # buffered avoids the overlapped-IO path entirely.
                 waiting = handle.in_waiting
                 if not waiting:
+                    if (
+                        not heard_anything
+                        and not kicked
+                        and (time.monotonic() - started) > SILENT_PAD_TIMEOUT
+                    ):
+                        # The port is open but the pad has said nothing. It is
+                        # most likely parked at the REPL; restart its firmware
+                        # now that we already hold the data port.
+                        kicked = True
+                        log.info("pad is silent; trying to restart its firmware")
+                        self._kick_console(handle.port)
                     time.sleep(0.02)
                     continue
                 chunk = handle.read(waiting)
@@ -301,6 +355,7 @@ class SerialLink:
                 return
             if not chunk:
                 continue
+            heard_anything = True
             buffer += chunk
             while b"\n" in buffer:
                 raw, _, buffer = buffer.partition(b"\n")

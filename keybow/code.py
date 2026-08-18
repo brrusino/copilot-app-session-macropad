@@ -97,12 +97,18 @@ _RX_LIMIT = 4096
 
 
 def _send(obj):
-    """Best-effort write of one JSON line. Silently drops if the host is gone."""
+    """Best-effort write of one JSON line. Silently drops if the host is gone.
+
+    Deliberately does NOT gate on ``_serial.connected``. That flag reflects DTR,
+    and over an RDP-redirected COM port the device never sees the host assert
+    it mid-run -- so gating on it left the pad permanently mute unless the host
+    happened to already hold the port open when main() started. Writing
+    unconditionally costs nothing: with ``write_timeout = 0`` a full buffer
+    raises rather than blocking, and that is caught below.
+    """
     if _serial is None:
         return
     try:
-        if not _serial.connected:
-            return
         _serial.write(json.dumps(obj).encode("utf-8") + b"\n")
     except Exception:
         # A dead or saturated host must never break the input path.
