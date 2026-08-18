@@ -60,6 +60,8 @@ class Daemon:
         #: a subject (interrupt) without guessing.
         self._last_session_slot: int | None = None
         self._last_attention_slot: int | None = None
+        #: Pad protocol version, learned from its hello or heartbeat.
+        self._pad_firmware: int | None = None
 
     def _build_link(self, cfg: config_module.Config):
         """Pick the pad transport.
@@ -113,22 +115,38 @@ class Daemon:
         self._last_pushed = None
         self._push_states()
 
+    def _note_firmware(self, version) -> None:
+        """Record the pad's protocol version, warning once if it is too old.
+
+        An old pad ignores messages it does not recognise, so the actions that
+        depend on them fail silently and look like the app ignoring its own
+        shortcuts. Saying so once, loudly, is the difference between a reflash
+        and an afternoon of debugging.
+        """
+        version = version if isinstance(version, int) else 0
+        if version == self._pad_firmware:
+            return
+        self._pad_firmware = version
+        if version < REQUIRED_FIRMWARE:
+            log.warning(
+                "pad firmware is v%s but this daemon needs v%s: the row 3 "
+                "actions cannot work until you reflash keybow/ onto the pad",
+                version,
+                REQUIRED_FIRMWARE,
+            )
+
     def _on_pad_event(self, message: dict) -> None:
         kind = message.get("t")
         if kind == "hello":
-            firmware = message.get("fw")
-            log.info("pad firmware v%s, %s slots", firmware, message.get("slots"))
-            self._pad_firmware = firmware if isinstance(firmware, int) else 0
-            if self._pad_firmware < REQUIRED_FIRMWARE:
-                # Say this loudly. An old pad ignores messages it does not
-                # recognise, so the actions that depend on them fail silently
-                # and look like the app ignoring its own shortcuts.
-                log.warning(
-                    "pad firmware is v%s but the daemon needs v%s: the row 3 "
-                    "actions cannot work until you reflash keybow/ onto the pad",
-                    self._pad_firmware,
-                    REQUIRED_FIRMWARE,
-                )
+            log.info(
+                "pad firmware v%s, %s slots", message.get("fw"), message.get("slots")
+            )
+            self._note_firmware(message.get("fw"))
+            return
+        if kind == "hb":
+            # The pad reports its version on every heartbeat, so a daemon that
+            # started after the pad still learns it.
+            self._note_firmware(message.get("fw"))
             return
         if kind != "down":
             # Releases matter only for the dictation chord, which the firmware

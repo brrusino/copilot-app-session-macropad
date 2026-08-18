@@ -143,3 +143,33 @@ def test_actions_never_call_sendinput(daemon, monkeypatch):
     daemon.store.apply_snapshot([session(0, asking=True, asking_at=1.0)])
     for action in ("new_session", "interrupt", "approve", "next_attention"):
         daemon._run_action(action)
+
+def test_an_old_pad_is_reported_once(daemon, caplog):
+    """An old pad ignores messages it does not recognise, so the actions that
+    depend on them fail silently and look like the app ignoring its shortcuts."""
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        daemon._on_pad_event({"t": "hb", "fw": 1})
+        daemon._on_pad_event({"t": "hb", "fw": 1})
+
+    warnings = [r for r in caplog.records if "reflash" in r.getMessage()]
+    assert len(warnings) == 1
+
+
+def test_a_current_pad_says_nothing(daemon, caplog):
+    import logging
+
+    from macropad_daemon.main import REQUIRED_FIRMWARE
+
+    with caplog.at_level(logging.WARNING):
+        daemon._on_pad_event({"t": "hb", "fw": REQUIRED_FIRMWARE})
+
+    assert [r for r in caplog.records if "reflash" in r.getMessage()] == []
+
+
+def test_the_version_is_learned_from_a_heartbeat_not_only_hello(daemon):
+    """The pad is powered by the machine it plugs into, so it usually booted
+    long before the daemon started and its hello is already gone."""
+    daemon._on_pad_event({"t": "hb", "fw": 1})
+    assert daemon._pad_firmware == 1

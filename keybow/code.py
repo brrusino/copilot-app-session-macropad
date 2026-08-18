@@ -477,7 +477,12 @@ def main():
             _release_chord()
 
         if now - _last_heartbeat >= config.HEARTBEAT_INTERVAL:
-            _send({"t": "hb"})
+            # Carry the firmware version on every heartbeat, not just the
+            # boot-time hello. A daemon that starts after the pad -- the normal
+            # case, since the pad is powered by the machine it plugs into --
+            # would otherwise never learn the version, and so could never warn
+            # that the pad is too old for what it is being asked to do.
+            _send({"t": "hb", "fw": FIRMWARE_VERSION})
             _last_heartbeat = now
 
         _render(now, _host_connected(now))
