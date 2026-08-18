@@ -108,17 +108,25 @@ def candidate_ports() -> list[str]:
 
 
 def probe(port: str, baud: int, timeout: float = PROBE_TIMEOUT) -> bool:
-    """True if ``port`` speaks our protocol.
+    """True if ``port`` is the pad's *data* port.
 
-    The firmware emits a heartbeat unprompted, so we only have to listen; we
-    also nudge it with a heartbeat in case we connected mid-cycle.
+    Deliberately writes nothing. The firmware emits an unsolicited heartbeat
+    every couple of seconds, so listening alone is sufficient -- and writing
+    first is actively harmful: CircuitPython's REPL console echoes whatever it
+    receives, so a probe that sent ``{"t":"hb"}`` and accepted any valid reply
+    would match the *console* port on its own echo. Both ports are redirected
+    over RDP, so that false positive is not hypothetical; it would leave the
+    daemon talking to a Python prompt instead of the firmware.
     """
     try:
         with serial.Serial(port, baud, timeout=0.2) as handle:
+            # Asserting DTR marks the port "connected" to CircuitPython, which
+            # is what allows the firmware to start writing to it.
             try:
-                handle.write(b'{"t":"hb"}\n')
-            except serial.SerialException:
+                handle.dtr = True
+            except (OSError, serial.SerialException):
                 pass
+
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
                 line = handle.readline()
@@ -128,7 +136,7 @@ def probe(port: str, baud: int, timeout: float = PROBE_TIMEOUT) -> bool:
                     message = json.loads(line.decode("utf-8").strip())
                 except (ValueError, UnicodeDecodeError):
                     continue
-                if isinstance(message, dict) and "t" in message:
+                if isinstance(message, dict) and message.get("t") in ("hb", "hello"):
                     return True
     except (serial.SerialException, OSError):
         return False

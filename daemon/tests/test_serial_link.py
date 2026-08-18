@@ -93,3 +93,84 @@ def test_registry_ignored_when_a_real_board_is_present(fake_ports, monkeypatch):
 def test_registry_ports_is_safe_off_windows(monkeypatch):
     monkeypatch.setattr(serial_link.sys, "platform", "linux")
     assert serial_link.registry_ports() == []
+
+
+# --- probe ----------------------------------------------------------------
+
+
+class FakePort:
+    """Minimal stand-in for serial.Serial, recording anything written."""
+
+    def __init__(self, lines, echo=False):
+        self._lines = list(lines)
+        self.written = []
+        self.dtr = False
+        self.echo = echo
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def write(self, data):
+        self.written.append(data)
+        if self.echo:
+            self._lines.append(data)
+
+    def readline(self):
+        return self._lines.pop(0) if self._lines else b""
+
+
+def test_probe_never_writes(monkeypatch):
+    """Writing to the pad's REPL console would execute Python on the device."""
+    fake = FakePort([b'{"t":"hb"}\n'])
+    monkeypatch.setattr(serial_link.serial, "Serial", lambda *a, **k: fake)
+    assert serial_link.probe("COM9", 115200) is True
+    assert fake.written == []
+
+
+def test_probe_asserts_dtr(monkeypatch):
+    """CircuitPython only writes to a data port it considers connected."""
+    fake = FakePort([b'{"t":"hb"}\n'])
+    monkeypatch.setattr(serial_link.serial, "Serial", lambda *a, **k: fake)
+    serial_link.probe("COM9", 115200)
+    assert fake.dtr is True
+
+
+def test_probe_accepts_hello(monkeypatch):
+    fake = FakePort([b'{"t":"hello","fw":1,"slots":8}\n'])
+    monkeypatch.setattr(serial_link.serial, "Serial", lambda *a, **k: fake)
+    assert serial_link.probe("COM9", 115200) is True
+
+
+def test_probe_rejects_an_echoing_repl(monkeypatch):
+    """The console port echoes input; that must not look like the pad.
+
+    Regression test for a real false positive: both the pad's console and data
+    ports are redirected over RDP, and a probe that wrote a heartbeat then
+    accepted any valid JSON would match the console's echo of its own message.
+    """
+    fake = FakePort([b"Adafruit CircuitPython 9.1.4\n", b">>> \n"], echo=True)
+    monkeypatch.setattr(serial_link.serial, "Serial", lambda *a, **k: fake)
+    assert serial_link.probe("COM9", 115200, timeout=0.3) is False
+
+
+def test_probe_ignores_other_json(monkeypatch):
+    fake = FakePort([b'{"t":"down","k":3}\n'])
+    monkeypatch.setattr(serial_link.serial, "Serial", lambda *a, **k: fake)
+    assert serial_link.probe("COM9", 115200, timeout=0.3) is False
+
+
+def test_probe_survives_garbage(monkeypatch):
+    fake = FakePort([b"\xff\xfe not json\n", b'{"t":"hb"}\n'])
+    monkeypatch.setattr(serial_link.serial, "Serial", lambda *a, **k: fake)
+    assert serial_link.probe("COM9", 115200) is True
+
+
+def test_probe_returns_false_when_port_cannot_open(monkeypatch):
+    def boom(*a, **k):
+        raise serial_link.serial.SerialException("nope")
+
+    monkeypatch.setattr(serial_link.serial, "Serial", boom)
+    assert serial_link.probe("COM9", 115200) is False
