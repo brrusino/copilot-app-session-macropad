@@ -25,10 +25,13 @@ not read yet -- is theirs outright, because the database has no equivalent.
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass, field
 
 from .copilot_db import PinnedSession
+
+log = logging.getLogger("macropad")
 
 # These strings are the wire contract with the firmware; they must stay in sync
 # with the keys of ``PALETTE`` in keybow/config.py.
@@ -113,6 +116,9 @@ class StateStore:
     #: Last time each session was observed running, used to bridge the gaps
     #: between turns. See ``WORKING_HOLD``.
     _last_running_at: dict[str, float] = field(default_factory=dict)
+    #: Sessions whose question has already been reported as retired, so the
+    #: measurement is logged once rather than on every reconcile tick.
+    _retired: set[str] = field(default_factory=set)
 
     # -- inputs ----------------------------------------------------------
 
@@ -267,11 +273,26 @@ class StateStore:
 
         Hooks are the missing evidence. Any tool call or prompt after the
         question was asked means work resumed, so the question is behind us.
+
+        How long that takes depends on which hook gets there first.
+        ``userPromptSubmitted`` fires the instant you send an answer, so a typed
+        reply clears it immediately. Approving a permission prompt is not a
+        prompt submission and fires nothing, so that case waits for the next
+        ``permissionRequest`` -- which is the agent's *next* tool call, and
+        therefore as far away as the agent's next pause for thought.
         """
         if not session.asking:
             return False
         if overlay is not None and overlay.worked_wall > session.asking_at:
+            if session.session_id not in self._retired:
+                self._retired.add(session.session_id)
+                log.info(
+                    "%s: question retired %.1fs after it was asked",
+                    session.name,
+                    overlay.worked_wall - session.asking_at,
+                )
             return False
+        self._retired.discard(session.session_id)
         return True
 
     def _is_working(self, session: PinnedSession, overlay: SessionOverlay | None) -> bool:
