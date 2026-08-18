@@ -41,3 +41,45 @@ def test_parse_chord_rejects_garbage(chord):
 
 def test_send_chord_returns_false_on_unparseable():
     assert actions.send_chord("bogus+key") is False
+
+def test_switch_uses_the_shortcut_when_the_app_is_on_screen(monkeypatch):
+    """The deep link spawns github.exe to route the URL, measured at ~4.5s.
+
+    The app's own Ctrl+<n> shortcut selects the same session with nothing
+    launched, so it is the path that must be taken whenever it can be.
+    """
+    sent = []
+    monkeypatch.setattr(actions, "IS_WINDOWS", True)
+    monkeypatch.setattr(actions, "app_window", lambda: 1234)
+    monkeypatch.setattr(actions, "_activate", lambda h: True)
+    monkeypatch.setattr(actions, "send_chord", lambda c: sent.append(c) or True)
+    monkeypatch.setattr(
+        actions.ctypes, "windll", type("W", (), {"user32": type("U", (), {"GetForegroundWindow": staticmethod(lambda: 1234)})()})()
+    )
+    monkeypatch.setattr(actions, "focus_session", lambda s: pytest.fail("deep link used"))
+
+    assert actions.switch_to_slot(2, "sess") is True
+    assert sent == ["ctrl+3"]
+
+
+def test_switch_falls_back_when_the_app_window_is_gone(monkeypatch):
+    """No window means no keystroke target; the shell handler still works."""
+    monkeypatch.setattr(actions, "IS_WINDOWS", True)
+    monkeypatch.setattr(actions, "app_window", lambda: None)
+    monkeypatch.setattr(actions, "send_chord", lambda c: pytest.fail("chord sent"))
+    used = []
+    monkeypatch.setattr(actions, "focus_session", lambda s: used.append(s) or True)
+
+    assert actions.switch_to_slot(2, "sess") is True
+    assert used == ["sess"]
+
+
+def test_slots_past_the_single_digit_shortcuts_use_the_deep_link(monkeypatch):
+    """Ctrl+<n> only spans the number row."""
+    monkeypatch.setattr(actions, "IS_WINDOWS", True)
+    monkeypatch.setattr(actions, "send_chord", lambda c: pytest.fail("chord sent"))
+    used = []
+    monkeypatch.setattr(actions, "focus_session", lambda s: used.append(s) or True)
+
+    assert actions.switch_to_slot(actions.MAX_SHORTCUT_SLOT, "sess") is True
+    assert used == ["sess"]

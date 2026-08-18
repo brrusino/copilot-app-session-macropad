@@ -154,7 +154,7 @@ class Daemon:
             return
         self._last_session_slot = slot
         log.info("focus slot %s -> %s", slot, session.name)
-        actions.focus_session(session.session_id or "")
+        actions.switch_to_slot(slot, session.session_id or "")
         # The pad pulses white until told the navigation landed. Watch for it
         # off-thread so the key/LED path is never blocked by a slow app.
         threading.Thread(
