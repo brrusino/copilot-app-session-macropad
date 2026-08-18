@@ -377,13 +377,13 @@ def test_interrupted_outranks_working():
     store.apply_snapshot([stopped], now=100.0)
     assert store.resolve(stopped) == INTERRUPTED
 
-def test_a_tool_call_retires_a_question_the_app_still_reports():
-    """permissionRequest fires before every tool call, so reaching one proves
-    the agent is executing again -- which it cannot be while waiting on you.
+def test_permission_request_does_not_retire_a_question():
+    """That hook *is* the question, so it must never cancel it.
 
-    This is the only in-turn signal the daemon gets: preToolUse/postToolUse are
-    unregistered on purpose, and the app writes no activity item until the turn
-    ends, so without this the slot blinks orange for the whole turn.
+    Regression test for a real failure: a session went from orange to blue one
+    second after asking, while still waiting for an answer, because
+    permissionRequest fires as the agent blocks on you and was being read as
+    "work resumed".
     """
     asked_at = 1_000_000.0
     store = StateStore(slot_count=2)
@@ -396,6 +396,23 @@ def test_a_tool_call_retires_a_question_the_app_still_reports():
     assert store.resolve(waiting) == NEEDS_APPROVAL
 
     store.apply_hook("permissionRequest", "s", now=101.0)
+    assert store.resolve(waiting) == NEEDS_APPROVAL
+
+
+def test_submitting_a_prompt_does_retire_a_question():
+    """Answering by typing cannot coincide with the agent asking, so it is
+    evidence the question is behind us."""
+    asked_at = 1_000_000.0
+    store = StateStore(slot_count=2)
+    waiting = PinnedSession(
+        slot=0, workspace_id="w", session_id="s", name="n",
+        is_running=True, unread=False, was_interrupted=False,
+        asking=True, asking_at=asked_at, auto_approve=True,
+    )
+    store.apply_snapshot([waiting], now=100.0)
+    assert store.resolve(waiting) == NEEDS_APPROVAL
+
+    store.apply_hook("userPromptSubmitted", "s", now=101.0)
     assert store.resolve(waiting) == WORKING
 
 def asking_session(activity=0, **kwargs):

@@ -166,14 +166,18 @@ class StateStore:
             # A tool is starting, so the session is demonstrably working.
             overlay.working = True
             overlay.working_at = now
-            # Wall clock too, so this can retire a question the app still
-            # reports as outstanding. Getting as far as a tool call means the
-            # agent is executing again, which it cannot be while it waits on
-            # you. This is the only such signal the daemon receives during a
-            # turn -- preToolUse and postToolUse are deliberately unregistered
-            # to keep an HTTP round trip off every tool call, and the app
-            # writes no activity item until the whole turn ends.
-            overlay.worked_wall = time.time()
+            # Deliberately does NOT touch worked_wall.
+            #
+            # For a session that really asks, this hook *is* the question --
+            # it fires as the agent blocks on you, within a second of the app
+            # recording agent_asking. Treating it as "work resumed" used the
+            # signal that raises the alarm to cancel it, and a question went
+            # from orange to blue one second after being asked while still
+            # waiting for an answer.
+            #
+            # Only evidence that cannot coincide with asking may retire a
+            # question: a prompt you submitted, or the session doing
+            # measurable work afterwards.
 
         elif event_type == EVENT_AGENT_STOP:
             overlay.working = False
@@ -288,10 +292,12 @@ class StateStore:
 
         Two independent pieces of evidence retire it, and both are needed.
 
-        A hook -- any tool call or prompt after the question was asked -- means
-        work resumed. But hooks only fire for sessions started *after* the hook
-        file was installed, so every older session has none, and those are
-        exactly the long-lived ones a pad key is likely to be pointed at.
+        A hook -- specifically a prompt you submitted or a tool result, never
+        ``permissionRequest``. That one fires *as* the agent blocks on you, so
+        counting it would use the signal that raises the alarm to cancel it.
+        Hooks also only fire for sessions started after the hook file was
+        installed, so every older session has none, and those are exactly the
+        long-lived ones a pad key is likely to be pointed at.
 
         So also: the session's token totals advancing. Those move while an
         agent is executing, which it cannot be while waiting on you, and they
