@@ -102,7 +102,7 @@ class FakePort:
     """Minimal stand-in for serial.Serial, recording anything written."""
 
     def __init__(self, lines, echo=False):
-        self._lines = list(lines)
+        self._buffer = b"".join(lines)
         self.written = []
         self.dtr = False
         self.echo = echo
@@ -113,13 +113,18 @@ class FakePort:
     def __exit__(self, *exc):
         return False
 
+    @property
+    def in_waiting(self):
+        return len(self._buffer)
+
+    def read(self, count):
+        chunk, self._buffer = self._buffer[:count], self._buffer[count:]
+        return chunk
+
     def write(self, data):
         self.written.append(data)
         if self.echo:
-            self._lines.append(data)
-
-    def readline(self):
-        return self._lines.pop(0) if self._lines else b""
+            self._buffer += data
 
 
 def test_probe_never_writes(monkeypatch):

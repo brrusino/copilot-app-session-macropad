@@ -134,17 +134,29 @@ def probe(port: str, baud: int, timeout: float = PROBE_TIMEOUT) -> bool:
             except (OSError, serial.SerialException):
                 pass
 
+            # Poll in_waiting rather than calling readline(). readline() uses
+            # the blocking overlapped-IO path, which fails outright on an
+            # RDP-redirected port even while the pad is happily transmitting --
+            # so a probe built on it reports "no response" for a working pad.
+            buffer = b""
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
-                line = handle.readline()
-                if not line:
-                    continue
                 try:
-                    message = json.loads(line.decode("utf-8").strip())
-                except (ValueError, UnicodeDecodeError):
+                    waiting = handle.in_waiting
+                except (OSError, serial.SerialException):
+                    return False
+                if not waiting:
+                    time.sleep(0.05)
                     continue
-                if isinstance(message, dict) and message.get("t") in ("hb", "hello"):
-                    return True
+                buffer += handle.read(waiting)
+                while b"\n" in buffer:
+                    raw, _, buffer = buffer.partition(b"\n")
+                    try:
+                        message = json.loads(raw.decode("utf-8").strip())
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                    if isinstance(message, dict) and message.get("t") in ("hb", "hello"):
+                        return True
     except (serial.SerialException, OSError):
         return False
     return False
