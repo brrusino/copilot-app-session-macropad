@@ -266,6 +266,25 @@ def app_window() -> int | None:
     return found[0] if found else None
 
 
+def app_is_foreground() -> bool:
+    """Whether the Copilot app is the frontmost window.
+
+    The daemon can *observe* this but cannot change it: Windows refuses
+    ``SetForegroundWindow`` from a process that did not receive the last input
+    event, which is every background daemon. Raising the app is therefore the
+    pad's job, and this is what tells it whether that is needed.
+    """
+    if not IS_WINDOWS:
+        return True
+    hwnd = app_window()
+    if hwnd is None:
+        return False
+    try:
+        return ctypes.windll.user32.GetForegroundWindow() == hwnd
+    except Exception:
+        return False
+
+
 def _activate(hwnd: int) -> bool:
     """Bring ``hwnd`` to the foreground so a keystroke will land in it."""
     user32 = ctypes.windll.user32

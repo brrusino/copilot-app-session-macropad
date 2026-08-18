@@ -82,10 +82,14 @@ log_level = "INFO"
 # error          = [[255, 20, 20],  "solid"]
 
 [actions]
-# Keystrokes for the row 3 keys, sent after focusing the target session.
+# Keystrokes the daemon asks the PAD to type. It cannot type them itself:
+# SendInput reaches nothing from a background process, and over RDP the
+# keyboard belongs to the client machine anyway.
 #
-# These are starting points and want confirming against the running app --
-# see "Calibration" in the README. Fix them here, not in code.
-approve = "enter"
+# There is no "approve" here -- approving is the Enter key on row 4, typed
+# straight into whatever you are looking at.
+#
+# new_session is confirmed against the running app. interrupt is a starting
+# point and wants confirming -- see "Calibration" in the README.
 interrupt = "escape"
 new_session = "ctrl+n"

@@ -39,16 +39,19 @@ ROWS = (
 SESSION_KEYS = ROWS[0] + ROWS[1]
 
 # Row 3 global actions, left to right. Names are sent verbatim to the host.
+#
+# The first key is deliberately unbound: approving is now the Enter key on row
+# 4, which types into the session you are already looking at rather than asking
+# the daemon to find one for you.
 ACTION_KEYS = {
-    ROWS[2][0]: "approve",
     ROWS[2][1]: "interrupt",
     ROWS[2][2]: "next_attention",
     ROWS[2][3]: "new_session",
 }
 
 # Dictation: two adjacent bottom-row keys driving ONE push-to-talk chord.
-# Defaults to the two leftmost bottom keys so it falls under a thumb.
-DICTATION_KEYS = (ROWS[3][0], ROWS[3][1])
+# The middle pair, so it falls under a thumb from either hand.
+DICTATION_KEYS = (ROWS[3][1], ROWS[3][2])
 
 # The modifier chord the dictation keys hold down, as adafruit_hid Keycode
 # NAMES (resolved at runtime so this file stays plain data).
@@ -59,9 +62,44 @@ DICTATION_KEYS = (ROWS[3][0], ROWS[3][1])
 # it here rather than in code.py.
 DICTATION_CHORD = ("LEFT_CONTROL", "LEFT_GUI")
 
-# Remaining bottom-row keys are unassigned; presses are still reported to the
-# host so they can be bound later without a reflash.
-FREE_KEYS = (ROWS[3][2], ROWS[3][3])
+# Bring the Copilot app to the front before acting on it.
+#
+# Windows focuses the nth taskbar app with Win+<n>, and that is the only
+# mechanism available: the daemon cannot raise the window itself. Windows
+# refuses SetForegroundWindow from a process that did not receive the last
+# input event, which was confirmed here -- the call returns False once any
+# other app has focus. The pad, being a keyboard, can.
+#
+# Set this to your Copilot app's taskbar position, counting left to right and
+# ignoring Start / Search / Task View. Set it to None to never steal focus.
+#
+# Win+<n> TOGGLES: pressed while the app is already focused it minimises it.
+# So the pad only sends this when the daemon has told it the app is not
+# focused, and assumes focused when it has no daemon to ask.
+FOCUS_APP_CHORD = "win+7"
+
+# Keys that should bring the app forward first. Everything that acts on the
+# app, which is everything except dictation -- dictation types into whatever
+# you are already using, and stealing focus would defeat the point.
+FOCUS_KEYS = tuple(k for row in ROWS for k in row if k not in DICTATION_KEYS)
+
+# Keys that type a fixed sequence of chords straight into whatever has focus.
+#
+# These live on the pad rather than going through the daemon for the same
+# reason dictation does: they are plain keystrokes with no session logic, so
+# routing them through the host would only add latency and a dependency on the
+# daemon being up. Each value is a tuple of chords, sent in order.
+#
+#   left  - clear the composer: select everything, then delete it
+#   right - submit, which is also how you approve a prompt
+TYPING_KEYS = {
+    ROWS[3][0]: ("ctrl+a", "delete"),
+    ROWS[3][3]: ("enter",),
+}
+
+# Bottom-row keys with no binding. Presses are still reported to the host so
+# they can be bound later without a reflash.
+FREE_KEYS = (ROWS[2][0],)
 
 # Type the app's own Ctrl+<n> shortcut when a session key is pressed.
 #
@@ -109,6 +147,11 @@ PALETTE = {
     # Dictation keys: dim normally, hot while the chord is held.
     "dictation":      ((70, 30, 60),    "solid"),
     "dictation_live": ((255, 60, 140),  "solid"),
+    # Keys that type straight into the composer -- clear and submit. A hue of
+    # their own, because pressing one edits your prompt rather than steering a
+    # session, and confusing the two is expensive.
+    "typing":         ((25, 70, 60),   "solid"),
+    "typing_active":  ((80, 255, 200), "solid"),
     # Momentary flash confirming a session key press was registered. The app
     # takes several seconds to navigate, so without this the pad appears to
     # have ignored you.

@@ -62,6 +62,9 @@ class Daemon:
         self._last_attention_slot: int | None = None
         #: Pad protocol version, learned from its hello or heartbeat.
         self._pad_firmware: int | None = None
+        #: Whether the app was frontmost at the last check, so the pad is only
+        #: told when it changes.
+        self._app_focused: bool | None = None
 
     def _build_link(self, cfg: config_module.Config):
         """Pick the pad transport.
@@ -112,6 +115,9 @@ class Daemon:
         self.link.send({"t": "palette", "v": palette})
         if self.cfg.brightness is not None:
             self.link.send({"t": "brightness", "v": self.cfg.brightness})
+        # Resend on connect: a pad that just came up assumes the app is focused,
+        # which is wrong as often as it is right.
+        self._push_focus(force=True)
         self._last_pushed = None
         self._push_states()
 
@@ -265,38 +271,28 @@ class Daemon:
             self._switch_to(slot)
             return
 
-        # approve and interrupt act on the session **in front of you**, and
-        # never navigate.
+        # interrupt acts on the session **in front of you**, and never
+        # navigates.
         #
         # Switching and acting on one press means acting on a session you have
-        # not looked at: approving a prompt you have not read, or stopping work
-        # you cannot see. It is also unsafe in a way that is easy to miss --
-        # approve types Enter, so aimed at a session whose composer holds text
-        # it would send that text rather than approve anything.
+        # not looked at -- stopping work you cannot see. Navigation is what the
+        # next-attention key is for: press it to reach the session that wants
+        # you, read it, then act.
         #
-        # Navigation is what the next-attention key is for. Press it to reach
-        # the session that wants you, read it, then act.
-        if name in ("approve", "interrupt"):
+        # Approving is not here at all: it is the Enter key on row 4, typed
+        # straight into whatever you are looking at. Having the daemon find a
+        # session to approve meant confirming a prompt you had not read.
+        if name == "interrupt":
             slot = self._focused_slot()
             if slot is None:
-                log.info("%s: the app is not on one of the pad's sessions", name)
+                log.info("interrupt: the app is not on one of the pad's sessions")
                 return
             session = self.store.session_for_slot(slot)
             state = self.store.resolve(session)
-            if name == "approve" and state != state_module.NEEDS_APPROVAL:
-                # Refusing here is the point: a stray press must not turn into
-                # an Enter typed into whatever happens to be focused.
-                log.info("approve: %s is not waiting on you (%s)", session.name, state)
-                return
-            if name == "interrupt" and state != state_module.WORKING:
+            if state != state_module.WORKING:
                 log.info("interrupt: %s is not working (%s)", session.name, state)
                 return
-            chord = (
-                self.cfg.actions.approve
-                if name == "approve"
-                else self.cfg.actions.interrupt
-            )
-            self._type_chord(chord)
+            self._type_chord(self.cfg.actions.interrupt)
             return
 
         if name == "new_session":
@@ -321,7 +317,24 @@ class Daemon:
         if self.link.send({"t": "states", "v": states}):
             self._last_pushed = states
 
+    def _push_focus(self, force: bool = False) -> None:
+        """Tell the pad whether the app is frontmost.
+
+        The pad cannot see this, and it needs it: Win+<n> toggles, so a pad
+        that raised the app blindly would minimise it just as often. The daemon
+        can observe focus even though it cannot change it.
+        """
+        focused = actions.app_is_foreground()
+        if focused == self._app_focused and not force:
+            return
+        self._app_focused = focused
+        self.link.send({"t": "focus", "v": focused})
+
     def reconcile(self) -> None:
+        # Cheap, and it must be timely: a stale answer here means either a
+        # keystroke typed into the wrong window, or the app minimised by a
+        # focus chord it did not need.
+        self._push_focus()
         try:
             sessions = self.db.pinned_sessions(self.cfg.slot_count)
         except Exception:

@@ -15,11 +15,14 @@ Copilot app already exposes on your machine.
 +---------+---------+---------+---------+
 | session | session | session | session |   pinned sessions 5-8
 +---------+---------+---------+---------+
-| approve |interrupt|  next   |   new   |   global agent actions
+|  free   |interrupt|  next   |   new   |   global agent actions
 +---------+---------+---------+---------+
-|      dictation    |  free   |  free   |   push-to-talk + spare
+|  clear  |    dictation      |  enter  |   composer keys + push-to-talk
 +---------+---------+---------+---------+
 ```
+
+Every key except the two dictation keys **raises the Copilot app first**, so a
+press lands where you meant it even when you're in another window.
 
 ### LED states
 
@@ -243,7 +246,7 @@ belongs to the machine in front of you, not the one the daemon runs on. The pad
 is a real USB keyboard, so its keystrokes are forwarded like any other. The
 dictation chord worked from day one for exactly this reason.
 
-Anything the *daemon* decides — approve, interrupt, next attention — is sent to
+Anything the *daemon* decides — interrupt, next attention — is sent to
 the pad as a chord for the pad to type.
 
 The `ghapp://sessions/<id>` deep link is still there as a fallback for slots
@@ -267,9 +270,9 @@ Ctrl+[ / Ctrl+]   back / forward
 Ctrl+Alt+\        open plan
 ```
 
-`approve` and `interrupt` are **not** in that list and are unverified defaults.
-The app lists its full set under **Settings → Accessibility**; read them off
-there and set them in `[actions]` rather than trusting the defaults.
+`interrupt` is **not** in that list and is an unverified default. The app lists
+its full set under **Settings → Accessibility**; read it off there and set it
+in `[actions]` rather than trusting the default.
 
 ## Setup
 
@@ -452,27 +455,53 @@ would show. It also means everything is in place the moment a transport appears.
 See [When the pad's machine can run nothing at all](#when-the-pads-machine-can-run-nothing-at-all)
 for why some setups have no transport available, and what to do about it.
 
-## What row 3 does
+## What rows 3 and 4 do
 
 | key | acts on | keys sent |
 |---|---|---|
-| approve | the session you're looking at | `Enter` |
 | interrupt | the session you're looking at | `Esc` |
 | next attention | picks the next session that wants you | `Ctrl+<n>` |
 | new session | — | `Ctrl+N` |
+| clear | the composer | `Ctrl+A`, `Delete` |
+| enter | the composer — this is also how you approve | `Enter` |
 
-**Approve and interrupt never navigate.** Switching and acting on a single
-press means acting on a session you haven't looked at — approving a prompt you
-haven't read, or stopping work you can't see. Approve also types `Enter`, so
-aimed at a session whose composer holds text it would *send that text* rather
-than approve anything.
+**Clear and enter are typed by the pad**, like dictation: they're plain
+keystrokes with no session logic, so routing them through the daemon would only
+add latency and a dependency on it being up.
 
-So both refuse unless the focused session is actually in the matching state:
-approve only fires on a session that's asking, interrupt only on one that's
-working. Navigation is what **next attention** is for — press it to reach the
-session that wants you, read it, then act.
+**Interrupt never navigates.** It acts on the focused session and refuses
+unless that session is actually working — stopping work you can't see is worse
+than doing nothing. Navigation is what **next attention** is for.
 
-`Ctrl+N` is confirmed. `Enter` and `Esc` are unverified guesses; see
+There's no approve action any more. Approving is the **enter** key, typed into
+whatever you're looking at, which is both simpler and safer than having the
+daemon pick a session to confirm on your behalf.
+
+### Raising the app
+
+Every key except dictation brings the Copilot app forward first, by typing
+Windows' own `Win+<n>` "focus the nth taskbar app" shortcut.
+
+It has to be the pad that does this. Windows refuses `SetForegroundWindow` from
+a process that didn't receive the last input event — verified here, the call
+returns `False` as soon as any other app has focus — so the daemon cannot raise
+its own app. A keyboard can.
+
+Set `FOCUS_APP_CHORD` in `keybow/config.py` to your app's taskbar position
+(counting left to right, ignoring Start / Search / Task View), or `None` to
+never steal focus.
+
+Two details that matter:
+
+- **`Win+<n>` toggles.** Sent while the app is already focused it *minimises*
+  it. So the pad only sends it when the daemon has told it the app isn't in
+  front, and assumes focused when there's no daemon to ask.
+- **The keystroke waits.** Activation is asynchronous, so typing straight after
+  the focus chord races the window coming up and lands wherever focus still
+  was. The pad holds the keystroke until the daemon confirms the app is
+  frontmost, and drops it if that never happens.
+
+`Ctrl+N` is confirmed. `Esc` is an unverified guess; see
 [Calibration](#calibration).
 
 ## Which session is on which key
@@ -537,11 +566,16 @@ the only place a physical key number appears.
 tool uses something else, change `DICTATION_CHORD` in `keybow/config.py` — it
 takes Adafruit HID keycode names, so no code change is needed.
 
-**Row 3 keystrokes.** `approve` and `interrupt` are typed by the pad into the
-session you're looking at — they never navigate, and both refuse unless that
-session is actually asking / working. The defaults are **unverified guesses**;
-the app lists its real shortcuts under **Settings → Accessibility**, so read
-them off there and fix `[actions]`. `new_session` (`ctrl+n`) is confirmed.
+**Row 3 keystrokes.** `interrupt` is typed by the pad into the session you're
+looking at — it never navigates, and refuses unless that session is actually
+working. Its default is an **unverified guess**; the app lists its real
+shortcuts under **Settings → Accessibility**, so read it off there and fix
+`[actions]`. `new_session` (`ctrl+n`) is confirmed.
+
+**Your taskbar position.** `FOCUS_APP_CHORD` in `keybow/config.py` must match
+where the Copilot app sits on your taskbar, or every key will raise the *wrong*
+app and then type into it. Count left to right, ignoring Start / Search and
+Task View. Set it to `None` to turn focus-stealing off entirely.
 
 **LED timing you may notice, both deliberate.** A working session holds blue for
 a few seconds after it stops, because `is_running` drops out between turns (up
@@ -645,14 +679,17 @@ Confirmed working on real hardware, against the live app:
 
 Still unverified:
 
-- **Row 3 `approve` / `interrupt` / `new_session`.** The mechanism is fixed —
-  the pad types them now, where the daemon never could — but the bindings
-  themselves are still defaults. Read the real ones from **Settings →
-  Accessibility** and set them in `[actions]`.
+- **`interrupt`.** The mechanism is fixed — the pad types it now, where the
+  daemon never could — but `Esc` is still a guess. Read the real one from
+  **Settings → Accessibility** and set it in `[actions]`.
+- **Rows 3 and 4 as a whole**, and raising the app with `Win+7`. Implemented
+  and unit-tested, but not yet exercised on hardware — they need the firmware
+  reflashing first.
 - **The `interrupted` state.** Implemented and unit-tested, but never seen
   against real data: `was_interrupted` was false on every pinned session and all
   61 descendants when it was checked, so the signal is unconfirmed.
-- Whether the two dictation keys land where you want them under your thumb.
+- Whether the dictation keys land where you want them under your thumb now
+  they've moved to the middle pair.
 
 Physical key numbering is **not** an unknown: it's confirmed against Pimoroni's
 PMK documentation and already correct in `keybow/config.py`.

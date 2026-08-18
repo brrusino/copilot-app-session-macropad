@@ -124,7 +124,6 @@ _CHORD_ALIASES = {
 
 _DIGIT_BY_CHAR = dict(zip("123456789", _DIGIT_NAMES))
 
-
 def _parse_chord(text):
     """``"ctrl+shift+escape"`` -> a tuple of keycodes, or () if unusable."""
     parts = [p.strip().lower() for p in str(text).split("+") if p.strip()]
@@ -144,6 +143,41 @@ def _parse_chord(text):
     # All or nothing: a chord missing its modifier is not a safer version of
     # itself, it is a different keystroke sent into whatever has focus.
     return resolved if len(resolved) == len(names) else ()
+
+
+# Bottom-row keys that type a fixed sequence, resolved once at startup so a
+# press costs nothing but the keystrokes themselves.
+_TYPING_KEYS = {}
+for _key, _chords in getattr(config, "TYPING_KEYS", {}).items():
+    _resolved = tuple(_parse_chord(c) for c in _chords)
+    if all(_resolved):
+        _TYPING_KEYS[_key] = _resolved
+    else:
+        print("config: TYPING_KEYS[%r] has an unusable chord, ignoring" % (_key,))
+
+#: Chord that raises the Copilot app, and the keys that should use it.
+_FOCUS_CHORD = _parse_chord(getattr(config, "FOCUS_APP_CHORD", None) or "")
+_FOCUS_KEYS = frozenset(getattr(config, "FOCUS_KEYS", ()))
+
+#: Whether the app is frontmost, as last reported by the host.
+#:
+#: Defaults to True so a pad with no daemon behaves as it always has: type
+#: immediately, into whatever has focus. Assuming the opposite would make an
+#: unattended pad send Win+<n> on every press, and that toggles -- it would
+#: minimise the app as often as it raised it.
+_app_focused = True
+
+#: A keystroke waiting for the app to come forward, and when to give up on it.
+_pending_chords = ()
+_pending_until = 0.0
+
+#: How long a deferred keystroke stays valid.
+#:
+#: It has to outlast the host noticing the focus change, which it does on its
+#: reconcile tick, so this is a few of those. Past that you have moved on, and
+#: firing a stale keystroke into whatever you are now doing is worse than
+#: dropping it.
+_PENDING_TIMEOUT = 3.0
 
 # --- serial ---------------------------------------------------------------
 
@@ -307,6 +341,18 @@ def _handle_message(msg):
             _press_flash.pop(config.SESSION_KEYS[slot], None)
         return
 
+    if kind == "focus":
+        # The host reports whether the app is frontmost. The pad cannot see
+        # this, and it decides whether a key needs to raise the app first --
+        # Win+<n> toggles, so sending it blind would minimise the app as often
+        # as it raised it.
+        global _app_focused
+        was = _app_focused
+        _app_focused = bool(msg.get("v"))
+        if _app_focused and not was:
+            _flush_pending()
+        return
+
     if kind == "type":
         # Type a chord on the host's behalf. See _parse_chord: the host has no
         # working way to synthesise keystrokes itself.
@@ -357,6 +403,8 @@ def _resolve(key_number, now, connected):
     """Return the (r, g, b) a physical key should currently show."""
     if key_number in config.DICTATION_KEYS:
         name = "dictation_live" if _chord_active else "dictation"
+    elif key_number in _TYPING_KEYS:
+        name = "typing_active" if _action_flash.get(key_number, 0) > now else "typing"
     elif key_number in config.ACTION_KEYS:
         name = "action_active" if _action_flash.get(key_number, 0) > now else "action"
     elif key_number in config.SESSION_KEYS:
@@ -394,11 +442,70 @@ def _describe(key_number):
     """Role metadata sent with every key event so the host needs no key map."""
     if key_number in config.DICTATION_KEYS:
         return {"role": "dictation"}
+    if key_number in _TYPING_KEYS:
+        # Typed entirely on the pad; the host is told only so it can log.
+        return {"role": "typing"}
     if key_number in config.ACTION_KEYS:
         return {"role": "action", "action": config.ACTION_KEYS[key_number]}
     if key_number in config.SESSION_KEYS:
         return {"role": "session", "slot": config.SESSION_KEYS.index(key_number)}
     return {"role": "free"}
+
+
+def _type_all(chords):
+    """Send a sequence of chords, stopping at the first failure."""
+    for chord in chords:
+        if not chord:
+            continue
+        try:
+            _keyboard.send(*chord)
+        except Exception:
+            # A half-sent sequence is not a safer version of the whole one:
+            # "select all" without the "delete" leaves your prompt selected and
+            # the next keystroke replacing it.
+            return False
+    return True
+
+
+def _act_on_app(key_number, chords, now):
+    """Type ``chords`` at the app, raising it first if it is not in front.
+
+    Returns True if the pad has taken responsibility for them -- either sent,
+    or held until the app comes forward. Returns False only when the pad could
+    not type at all, which is what lets the host fall back to doing the work
+    itself.
+
+    Holding rather than typing immediately after the focus chord is deliberate:
+    Win+<n> activation is asynchronous, so typing straight after it races the
+    window coming up and the keystroke lands wherever focus still was.
+    """
+    global _pending_chords, _pending_until
+
+    if _app_focused or not _FOCUS_CHORD or key_number not in _FOCUS_KEYS:
+        return _type_all(chords)
+
+    if not _type_all((_FOCUS_CHORD,)):
+        return False
+    _pending_chords = chords
+    _pending_until = now + _PENDING_TIMEOUT
+    return True
+
+
+def _discard_pending():
+    """Forget a deferred keystroke the app never came forward for."""
+    global _pending_chords, _pending_until
+
+    _pending_chords = ()
+    _pending_until = 0.0
+
+
+def _flush_pending():
+    """Send a keystroke that was waiting for the app to come forward."""
+    global _pending_chords, _pending_until
+
+    chords, _pending_chords, _pending_until = _pending_chords, (), 0.0
+    if chords:
+        _type_all(chords)
 
 
 def _on_down(key_number, now):
@@ -407,8 +514,15 @@ def _on_down(key_number, now):
         if not _dictation_down:
             _press_chord()
         _dictation_down.add(key_number)
+    elif key_number in _TYPING_KEYS:
+        _action_flash[key_number] = now + _ACTION_FLASH_SECS
+        _act_on_app(key_number, _TYPING_KEYS[key_number], now)
     elif key_number in config.ACTION_KEYS:
         _action_flash[key_number] = now + _ACTION_FLASH_SECS
+        # The action itself is the host's to decide; all the pad does here is
+        # make sure the app is in front to receive whatever comes back.
+        if not _app_focused and _FOCUS_CHORD and key_number in _FOCUS_KEYS:
+            _type_all((_FOCUS_CHORD,))
     elif key_number in config.SESSION_KEYS:
         # Pulse until the host says the app has actually navigated. Focusing a
         # session takes several seconds, and a brief blip leaves you unsure
@@ -419,14 +533,12 @@ def _on_down(key_number, now):
     if _SEND_SHORTCUTS:
         digit = _shortcut_for(key_number)
         if digit is not None:
-            try:
-                _keyboard.send(_SHORTCUT_MODIFIER, digit)
-                typed = True
-            except Exception:
-                # A failed keystroke must not break the serial path too, and
-                # leaving `typed` false lets the host fall back to doing the
-                # switch itself.
-                pass
+            # Raises the app first when it is not in front. This reports
+            # "typed" for a keystroke still waiting on that, because the switch
+            # is under way either way and the host must not race it with the
+            # deep link -- but not when the pad could not type at all, which is
+            # exactly when the host should fall back.
+            typed = _act_on_app(key_number, ((_SHORTCUT_MODIFIER, digit),), now)
 
     event = {"t": "down", "k": key_number}
     if typed:
@@ -475,6 +587,11 @@ def main():
         # physical keys are all up (e.g. after a soft reload mid-press).
         if _chord_active and not _dictation_down:
             _release_chord()
+
+        # Drop a deferred keystroke the app never came forward for, rather
+        # than firing it later into whatever you have moved on to.
+        if _pending_chords and now > _pending_until:
+            _discard_pending()
 
         if now - _last_heartbeat >= config.HEARTBEAT_INTERVAL:
             # Carry the firmware version on every heartbeat, not just the

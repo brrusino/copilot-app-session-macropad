@@ -90,34 +90,10 @@ def test_interrupt_does_nothing_when_the_session_is_not_working(daemon, monkeypa
     assert daemon.link.sent == []
 
 
-def test_approve_acts_on_the_focused_session_without_navigating(daemon, monkeypatch):
-    daemon.store.apply_snapshot(
-        [session(0, is_running=True), session(1, asking=True, asking_at=1.0)]
-    )
-    monkeypatch.setattr(daemon.db, "focused_ids", lambda: {"s-1"})
-
-    daemon._run_action("approve")
-
-    assert daemon.link.sent == [{"t": "type", "v": daemon.cfg.actions.approve}]
-
-
-def test_approve_refuses_when_the_focused_session_is_not_asking(daemon, monkeypatch):
-    """The important one. approve types Enter, so aimed at a session whose
-    composer holds text it would send that text rather than approve anything.
-    """
-    daemon.store.apply_snapshot([session(0, is_running=True)])
-    monkeypatch.setattr(daemon.db, "focused_ids", lambda: {"s-0"})
-
-    daemon._run_action("approve")
-
-    assert daemon.link.sent == []
-
-
 def test_nothing_happens_when_the_app_is_not_on_a_pad_session(daemon, monkeypatch):
-    daemon.store.apply_snapshot([session(0, asking=True, asking_at=1.0)])
+    daemon.store.apply_snapshot([session(0, is_running=True)])
     monkeypatch.setattr(daemon.db, "focused_ids", lambda: {"some-other-session"})
 
-    daemon._run_action("approve")
     daemon._run_action("interrupt")
 
     assert daemon.link.sent == []
@@ -173,3 +149,29 @@ def test_the_version_is_learned_from_a_heartbeat_not_only_hello(daemon):
     long before the daemon started and its hello is already gone."""
     daemon._on_pad_event({"t": "hb", "fw": 1})
     assert daemon._pad_firmware == 1
+
+def test_focus_is_pushed_only_when_it_changes(daemon, monkeypatch):
+    """The pad needs this to decide whether to raise the app, and Win+<n>
+    toggles -- so a wrong answer minimises the app instead of raising it."""
+    state = {"focused": False}
+    monkeypatch.setattr(main_module.actions, "app_is_foreground", lambda: state["focused"])
+
+    daemon._push_focus()
+    daemon._push_focus()
+    assert daemon.link.sent == [{"t": "focus", "v": False}]
+
+    state["focused"] = True
+    daemon._push_focus()
+    assert daemon.link.sent[-1] == {"t": "focus", "v": True}
+
+
+def test_focus_is_resent_on_connect(daemon, monkeypatch):
+    """A pad that just came up assumes the app is focused, which is wrong as
+    often as it is right."""
+    monkeypatch.setattr(main_module.actions, "app_is_foreground", lambda: False)
+
+    daemon._push_focus()
+    daemon.link.sent.clear()
+    daemon._push_focus(force=True)
+
+    assert daemon.link.sent == [{"t": "focus", "v": False}]

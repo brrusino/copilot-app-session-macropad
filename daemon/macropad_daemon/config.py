@@ -44,13 +44,14 @@ class ActionBindings:
     ``MacropadDaemon._type_chord``. The daemon has no working way to synthesise
     a keystroke, so anything here is sent to the pad to type.
 
-    ``approve`` and ``interrupt`` act on the session the app currently has
-    open, and never navigate. Switching and acting on one press means acting on
-    a session you have not looked at, and ``approve`` types Enter -- aimed at a
-    session whose composer holds text, it would send that text rather than
-    approve anything. Both refuse unless the focused session is actually in the
-    matching state. Use the next-attention key to reach a session, read it,
-    then act.
+    ``interrupt`` acts on the session the app currently has open, and never
+    navigates. Switching and acting on one press means stopping work you have
+    not looked at. It refuses unless the focused session is actually working.
+    Use the next-attention key to reach a session, read it, then act.
+
+    Approving is **not** here. It is the Enter key on row 4, typed straight
+    into whatever you are looking at, which is both simpler and safer than
+    having the daemon pick a session to confirm on your behalf.
 
     Verified against the app's own accessibility labels on this machine:
 
@@ -64,13 +65,11 @@ class ActionBindings:
         Ctrl+<n>        select the nth pinned session
         Ctrl+N          new session
 
-    ``approve`` and ``interrupt`` are **not** in that list and remain
-    unconfirmed. The app exposes its full set under Settings -> Accessibility;
-    read them off there and correct these rather than assuming the defaults are
-    right. They are starting points, not verified bindings.
+    ``interrupt`` is **not** in that list and remains unconfirmed. The app
+    exposes its full set under Settings -> Accessibility; read it off there and
+    correct this rather than assuming the default is right.
     """
 
-    approve: str = "enter"
     interrupt: str = "escape"
     #: Confirmed against the running app.
     new_session: str = "ctrl+n"
@@ -185,7 +184,6 @@ def load(path: Path | None = None) -> Config:
 
     actions = data.get("actions", {})
     cfg.actions = ActionBindings(
-        approve=actions.get("approve", ActionBindings.approve),
         interrupt=actions.get("interrupt", ActionBindings.interrupt),
         new_session=actions.get("new_session", ActionBindings.new_session),
     )

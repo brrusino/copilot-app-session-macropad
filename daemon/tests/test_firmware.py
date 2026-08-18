@@ -101,6 +101,8 @@ def _install_stubs(monkeypatch):
     Keycode.SPACE = 0x2C
     Keycode.COMMA = 0x36
     Keycode.BACKSLASH = 0x31
+    Keycode.BACKSPACE = 0x2A
+    Keycode.DELETE = 0x4C
 
     keycode_mod.Keycode = Keycode
     monkeypatch.setitem(sys.modules, "adafruit_hid", hid_pkg)
@@ -234,6 +236,7 @@ def test_layout_covers_all_sixteen_keys(firmware):
 
     assigned = set(fw_config.SESSION_KEYS) | set(fw_config.ACTION_KEYS)
     assigned |= set(fw_config.DICTATION_KEYS) | set(fw_config.FREE_KEYS)
+    assigned |= set(fw_config.TYPING_KEYS)
     assert assigned == set(range(16))
 
 
@@ -244,6 +247,7 @@ def test_no_key_has_two_roles(firmware):
         list(fw_config.SESSION_KEYS),
         list(fw_config.ACTION_KEYS),
         list(fw_config.DICTATION_KEYS),
+        list(fw_config.TYPING_KEYS),
         list(fw_config.FREE_KEYS),
     ]
     flat = [k for group in groups for k in group]
@@ -568,3 +572,77 @@ def test_an_empty_chord_types_nothing(firmware):
     firmware._handle_message({"t": "type", "v": ""})
     sends = [e for e in firmware._test_keyboard.history if e[0] == "send"]
     assert sends == []
+
+# --- raising the app before acting on it ----------------------------------
+# The daemon cannot do this: Windows refuses SetForegroundWindow from a process
+# that did not receive the last input event, verified returning False here. The
+# pad is a keyboard, so it can.
+
+
+def test_no_focus_chord_when_the_app_is_already_in_front(firmware):
+    """Win+<n> toggles -- sent while the app is focused it MINIMISES it."""
+    import config as fw_config
+
+    firmware._app_focused = True
+    firmware._on_down(fw_config.SESSION_KEYS[0], 0.0)
+    sends = [e for e in firmware._test_keyboard.history if e[0] == "send"]
+    assert sends == [("send", ("LEFT_CONTROL", 0x1E))]
+
+
+def test_the_app_is_raised_first_when_it_is_not_in_front(firmware):
+    import config as fw_config
+
+    firmware._app_focused = False
+    firmware._on_down(fw_config.SESSION_KEYS[0], 0.0)
+    sends = [e for e in firmware._test_keyboard.history if e[0] == "send"]
+    assert sends == [("send", ("LEFT_GUI", 0x24))]   # win+7
+
+
+def test_the_keystroke_waits_for_the_app_to_come_forward(firmware):
+    """Typing straight after Win+<n> races the window coming up, so the
+    keystroke would land wherever focus still was."""
+    import config as fw_config
+
+    firmware._app_focused = False
+    firmware._on_down(fw_config.SESSION_KEYS[2], 0.0)
+    assert firmware._pending_chords
+
+    firmware._handle_message({"t": "focus", "v": True})
+    sends = [e for e in firmware._test_keyboard.history if e[0] == "send"]
+    assert sends[-1] == ("send", ("LEFT_CONTROL", 0x20))   # ctrl+3
+    assert not firmware._pending_chords
+
+
+def test_a_stale_pending_keystroke_is_dropped(firmware):
+    """Firing it later, into whatever you moved on to, is worse than dropping."""
+    import config as fw_config
+
+    firmware._app_focused = False
+    firmware._on_down(fw_config.SESSION_KEYS[0], 0.0)
+    assert firmware._pending_chords
+
+    firmware._discard_pending()
+    firmware._handle_message({"t": "focus", "v": True})
+    sends = [e for e in firmware._test_keyboard.history if e[0] == "send"]
+    assert sends == [("send", ("LEFT_GUI", 0x24))]   # only the focus chord
+
+
+def test_dictation_never_steals_focus(firmware):
+    """It types into whatever you are already using; that is the point."""
+    import config as fw_config
+
+    assert fw_config.DICTATION_KEYS[0] not in fw_config.FOCUS_KEYS
+    assert fw_config.DICTATION_KEYS[1] not in fw_config.FOCUS_KEYS
+
+
+def test_every_other_key_raises_the_app(firmware):
+    import config as fw_config
+
+    expected = set(range(16)) - set(fw_config.DICTATION_KEYS)
+    assert set(fw_config.FOCUS_KEYS) == expected
+
+
+def test_a_pad_with_no_daemon_assumes_the_app_is_focused(firmware):
+    """Assuming the opposite makes an unattended pad send Win+<n> on every
+    press, which toggles -- it would minimise the app as often as raise it."""
+    assert firmware._app_focused is True

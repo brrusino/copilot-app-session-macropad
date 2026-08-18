@@ -63,13 +63,11 @@ def test_action_bindings_override(tmp_path):
         tmp_path,
         """
         [actions]
-        approve = "ctrl+enter"
         interrupt = "ctrl+c"
         new_session = "ctrl+shift+n"
         """,
     )
     cfg = config_module.load(path)
-    assert cfg.actions.approve == "ctrl+enter"
     assert cfg.actions.interrupt == "ctrl+c"
     assert cfg.actions.new_session == "ctrl+shift+n"
 
