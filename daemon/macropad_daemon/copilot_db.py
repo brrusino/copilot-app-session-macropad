@@ -279,6 +279,16 @@ class CopilotDB:
             asking_sessions = self._asking_session_ids(conn)
 
         def rolled_up(pin: str, own_running: bool, own_unread: bool):
+            """Fold descendant state into a pinned slot.
+
+            Only states that clear themselves are rolled up. Unread is
+            deliberately **not**: the app does not mark a parent unread when a
+            child has output, and overriding it produced a green light nothing
+            could turn off -- one pin had 51 unread descendants, so clearing it
+            by hand meant opening 51 child sessions. Work and questions are
+            different: work stops on its own, and a question is answered from
+            the parent.
+            """
             running, has_unread = own_running, own_unread
             asking_at = 0.0
             interrupted = False
@@ -288,8 +298,6 @@ class CopilotDB:
                     continue
                 if row["is_running"]:
                     running = True
-                if child in unread:
-                    has_unread = True
                 asking_at = max(asking_at, asking_sessions.get(row["session_id"], 0.0))
                 if row["was_interrupted"]:
                     interrupted = True

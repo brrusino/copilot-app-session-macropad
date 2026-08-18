@@ -157,6 +157,14 @@ class StateStore:
             # A tool is starting, so the session is demonstrably working.
             overlay.working = True
             overlay.working_at = now
+            # Wall clock too, so this can retire a question the app still
+            # reports as outstanding. Getting as far as a tool call means the
+            # agent is executing again, which it cannot be while it waits on
+            # you. This is the only such signal the daemon receives during a
+            # turn -- preToolUse and postToolUse are deliberately unregistered
+            # to keep an HTTP round trip off every tool call, and the app
+            # writes no activity item until the whole turn ends.
+            overlay.worked_wall = time.time()
 
         elif event_type == EVENT_AGENT_STOP:
             overlay.working = False

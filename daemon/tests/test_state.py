@@ -418,3 +418,24 @@ def test_interrupted_outranks_working():
     )
     store.apply_snapshot([stopped], now=100.0)
     assert store.resolve(stopped) == INTERRUPTED
+
+def test_a_tool_call_retires_a_question_the_app_still_reports():
+    """permissionRequest fires before every tool call, so reaching one proves
+    the agent is executing again -- which it cannot be while waiting on you.
+
+    This is the only in-turn signal the daemon gets: preToolUse/postToolUse are
+    unregistered on purpose, and the app writes no activity item until the turn
+    ends, so without this the slot blinks orange for the whole turn.
+    """
+    asked_at = 1_000_000.0
+    store = StateStore(slot_count=2)
+    waiting = PinnedSession(
+        slot=0, workspace_id="w", session_id="s", name="n",
+        is_running=True, unread=False, was_interrupted=False,
+        asking=True, asking_at=asked_at, auto_approve=True,
+    )
+    store.apply_snapshot([waiting], now=100.0)
+    assert store.resolve(waiting) == NEEDS_APPROVAL
+
+    store.apply_hook("permissionRequest", "s", now=101.0)
+    assert store.resolve(waiting) == WORKING

@@ -273,7 +273,7 @@ def test_missing_parent_links_table_is_tolerated(tmp_path):
 # rolling their activity up, such a session looks idle while its children run.
 
 
-def build_family(tmp_path, child_running=0, child_unread=(), depth=1):
+def build_family(tmp_path, child_running=0, child_unread=(), depth=1, parent_unread=False):
     """A pinned parent with a child (optionally a grandchild)."""
     links = [("ws-child", "ws-parent")]
     workspaces = [
@@ -298,7 +298,10 @@ def build_family(tmp_path, child_running=0, child_unread=(), depth=1):
     )
     conn.execute(
         "INSERT INTO app_state (key, value) VALUES (?, ?)",
-        (UNREAD_KEY, json.dumps(list(child_unread))),
+        (
+            UNREAD_KEY,
+            json.dumps(list(child_unread) + (["ws-parent"] if parent_unread else [])),
+        ),
     )
     conn.executemany(
         "INSERT INTO workspaces (id,name,session_id,archived_at,updated_at)"
@@ -334,8 +337,21 @@ def test_idle_children_leave_the_parent_idle(tmp_path):
     assert db.pinned_sessions(8)[0].is_running is False
 
 
-def test_unread_child_makes_the_parent_unread(tmp_path):
+def test_unread_child_does_not_make_the_parent_unread(tmp_path):
+    """Green has to be clearable by visiting the pinned session.
+
+    The app does not mark a parent unread when a child has output, and
+    overriding it produced a light nothing could turn off: one pin had 51
+    unread descendants, so clearing it by hand meant opening 51 child sessions.
+    Unlike work, which stops on its own, unread only clears by being read.
+    """
     db = build_family(tmp_path, child_unread=["ws-child"])
+    assert db.pinned_sessions(8)[0].unread is False
+
+
+def test_the_parents_own_unread_still_counts(tmp_path):
+    """Dropping the roll-up must not lose the signal that actually matters."""
+    db = build_family(tmp_path, parent_unread=True)
     assert db.pinned_sessions(8)[0].unread is True
 
 
