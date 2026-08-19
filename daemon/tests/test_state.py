@@ -465,3 +465,47 @@ def test_a_new_question_is_judged_on_its_own():
     )
     store.apply_snapshot([second])
     assert store.resolve(second) == NEEDS_APPROVAL
+
+def test_a_background_task_shows_as_working():
+    """Background work runs with is_running false the whole time, so the slot
+    sat white while the session was demonstrably busy -- measured at 2813
+    tokens in 20 seconds on a slot showing idle."""
+    store = StateStore(slot_count=1)
+    idle = PinnedSession(
+        slot=0, workspace_id="w", session_id="s", name="demo",
+        is_running=False, unread=False, was_interrupted=False, activity=1000,
+    )
+    store.apply_snapshot([idle], now=100.0)
+    assert store.resolve(idle) == IDLE, "nothing seen yet, so nothing to claim"
+
+    busy = replace(idle, activity=1500)
+    store.apply_snapshot([busy], now=101.0)
+    assert store.resolve(busy) == WORKING
+
+
+def test_a_truly_idle_session_stays_white():
+    """Token totals do not move when nothing is running."""
+    store = StateStore(slot_count=1)
+    idle = PinnedSession(
+        slot=0, workspace_id="w", session_id="s", name="demo",
+        is_running=False, unread=False, was_interrupted=False, activity=1000,
+    )
+    for i in range(5):
+        store.apply_snapshot([idle], now=100.0 + i)
+        assert store.resolve(idle) == IDLE
+
+
+def test_background_work_stops_showing_working_once_it_ends():
+    """The hold bridges gaps between turns; it must not latch on forever."""
+    store = StateStore(slot_count=1)
+    idle = PinnedSession(
+        slot=0, workspace_id="w", session_id="s", name="demo",
+        is_running=False, unread=False, was_interrupted=False, activity=1000,
+    )
+    store.apply_snapshot([idle], now=100.0)
+    busy = replace(idle, activity=1500)
+    store.apply_snapshot([busy], now=101.0)
+    assert store.resolve(busy) == WORKING
+
+    store.apply_snapshot([busy], now=101.0 + WORKING_HOLD + 1)
+    assert store.resolve(busy) == IDLE

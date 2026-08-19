@@ -122,6 +122,8 @@ class StateStore:
     #: Activity counter seen when each question first appeared, keyed by
     #: (session, when it was asked) so a new question is judged on its own.
     _question_activity: dict[tuple, int] = field(default_factory=dict)
+    #: Last activity counter seen per session, so a change can be spotted.
+    _last_activity: dict[str, int] = field(default_factory=dict)
 
     # -- inputs ----------------------------------------------------------
 
@@ -211,6 +213,13 @@ class StateStore:
                 continue
             if session.is_running:
                 self._last_running_at[session.session_id] = self._snapshot_at
+            # Rising token totals mean the session is doing work right now,
+            # which is the only visible sign of a background task -- those run
+            # with is_running false throughout.
+            previous = self._last_activity.get(session.session_id)
+            if previous is not None and session.activity != previous:
+                self._last_running_at[session.session_id] = self._snapshot_at
+            self._last_activity[session.session_id] = session.activity
             if session.asking:
                 # Remember how much work the session had done when the question
                 # first appeared, so later movement can retire it. Recorded here
@@ -222,15 +231,16 @@ class StateStore:
             else:
                 self._forget_question(session.session_id)
 
-        # Drop overlays for sessions that are no longer pinned so the dict
-        # cannot grow without bound over a long uptime.
+        # Drop per-session bookkeeping for sessions that are no longer pinned,
+        # so these dicts cannot grow without bound over a long uptime.
         live = {s.session_id for s in self._sessions if s.session_id}
-        for session_id in list(self._overlays):
-            if session_id not in live:
-                del self._overlays[session_id]
-        for session_id in list(self._last_running_at):
-            if session_id not in live:
-                del self._last_running_at[session_id]
+        for store in (self._overlays, self._last_running_at, self._last_activity):
+            for session_id in [k for k in store if k not in live]:
+                del store[session_id]
+        for session_id in [s for s in self._retired if s not in live]:
+            self._retired.discard(session_id)
+        for key in [k for k in self._question_activity if k[0] not in live]:
+            del self._question_activity[key]
 
     # -- outputs ---------------------------------------------------------
 
@@ -352,6 +362,12 @@ class StateStore:
         through a task drops to not-running in the gap between turns, so
         following it literally makes the LED cycle blue/green/white while the
         work is in fact still going. Those gaps are bridged by ``WORKING_HOLD``.
+
+        And it does not cover background tasks at all: work dispatched to run
+        in the background burns tokens with ``is_running`` false the whole
+        time, so the slot sat white while the session was demonstrably busy --
+        measured at 2813 tokens in 20 seconds on a slot showing idle. Rising
+        token totals are the signal that catches those.
         """
         if session.is_running:
             return True
