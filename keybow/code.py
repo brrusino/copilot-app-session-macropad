@@ -150,8 +150,11 @@ def _parse_chord(text):
 # press costs nothing but the keystrokes themselves.
 _TYPING_KEYS = {}
 for _key, _chords in getattr(config, "TYPING_KEYS", {}).items():
-    _resolved = tuple(_parse_chord(c) for c in _chords)
-    if all(_resolved):
+    # A number is a pause, and passes through untouched.
+    _resolved = tuple(
+        c if isinstance(c, (int, float)) else _parse_chord(c) for c in _chords
+    )
+    if all(r or isinstance(r, (int, float)) for r in _resolved):
         _TYPING_KEYS[_key] = _resolved
     else:
         print("config: TYPING_KEYS[%r] has an unusable chord, ignoring" % (_key,))
@@ -171,6 +174,10 @@ _app_focused = True
 #: A keystroke waiting for the app to come forward, and when to give up on it.
 _pending_chords = ()
 _pending_until = 0.0
+
+#: The tail of a typed sequence waiting out a pause, and when it may go.
+_type_queue = []
+_type_ready_at = 0.0
 
 #: How long a deferred keystroke stays valid.
 #:
@@ -456,8 +463,19 @@ def _describe(key_number):
 
 
 def _type_all(chords):
-    """Send a sequence of chords, stopping at the first failure."""
-    for chord in chords:
+    """Send a sequence of chords, stopping at the first failure.
+
+    A numeric entry is a pause: everything after it is queued and sent later by
+    the main loop. Sleeping here instead would stall key scanning and the LED
+    animation, and could hold the dictation chord down past its release.
+    """
+    global _type_queue, _type_ready_at
+
+    for i, chord in enumerate(chords):
+        if isinstance(chord, float) or isinstance(chord, int):
+            _type_queue = list(chords[i + 1:])
+            _type_ready_at = time.monotonic() + chord
+            return True
         if not chord:
             continue
         try:
@@ -468,6 +486,16 @@ def _type_all(chords):
             # the next keystroke replacing it.
             return False
     return True
+
+
+def _drain_type_queue(now):
+    """Send the rest of a sequence once its pause has elapsed."""
+    global _type_queue
+
+    if not _type_queue or now < _type_ready_at:
+        return
+    rest, _type_queue = _type_queue, []
+    _type_all(rest)
 
 
 def _act_on_app(key_number, chords, now):
@@ -595,6 +623,8 @@ def main():
         # than firing it later into whatever you have moved on to.
         if _pending_chords and now > _pending_until:
             _discard_pending()
+
+        _drain_type_queue(now)
 
         if now - _last_heartbeat >= config.HEARTBEAT_INTERVAL:
             # Carry the firmware version on every heartbeat, not just the

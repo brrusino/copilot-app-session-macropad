@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -669,9 +670,12 @@ def test_the_mode_key_cycles_with_shift_tab(firmware):
     assert sends == [("send", ("LEFT_SHIFT", 0x2B))]
 
 
-def test_the_compact_key_types_the_whole_command(firmware):
-    """A partly-typed command would leave the palette open on something else,
-    and the trailing Enter would run whatever it had filtered to."""
+def test_the_compact_key_waits_before_submitting(firmware):
+    """Typing "/" opens the app's command menu and each letter filters it,
+    which is async webview work. Sent back-to-back over USB, the Enter arrived
+    before the menu had settled and left "/compact" sitting in the composer
+    unsent. The letters land fine at full speed, so only the Enter waits.
+    """
     import config as fw_config
 
     firmware._app_focused = True
@@ -686,5 +690,33 @@ def test_the_compact_key_types_the_whole_command(firmware):
         (0x04,),   # a
         (0x06,),   # c
         (0x17,),   # t
-        (0x28,),   # enter
-    ]
+    ], "the command text goes at full speed"
+    assert firmware._type_queue, "the Enter is held back"
+
+
+def test_the_held_enter_is_sent_once_the_menu_has_settled(firmware):
+    import config as fw_config
+
+    firmware._app_focused = True
+    firmware._on_down(fw_config.ROWS[2][3], 0.0)
+    firmware._test_keyboard.history.clear()
+
+    # Too early: nothing yet.
+    firmware._drain_type_queue(firmware._type_ready_at - 0.01)
+    assert [e for e in firmware._test_keyboard.history if e[0] == "send"] == []
+
+    firmware._drain_type_queue(firmware._type_ready_at)
+    sends = [e[1] for e in firmware._test_keyboard.history if e[0] == "send"]
+    assert sends == [(0x28,)]   # enter
+    assert not firmware._type_queue
+
+
+def test_the_pause_does_not_stall_the_key_loop(firmware):
+    """Sleeping through it would freeze key scanning and the LED animation,
+    and could hold the dictation chord down past its release."""
+    import config as fw_config
+
+    firmware._app_focused = True
+    before = time.monotonic()
+    firmware._on_down(fw_config.ROWS[2][3], 0.0)
+    assert time.monotonic() - before < 0.1

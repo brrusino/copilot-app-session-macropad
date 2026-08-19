@@ -87,6 +87,26 @@ FOCUS_KEYS = tuple(k for row in ROWS for k in row if k not in DICTATION_KEYS)
 # routing them through the host would only add latency and a dependency on the
 # daemon being up. Each value is a tuple of chords, sent in order.
 #
+# How long to wait after typing a slash command before pressing Enter.
+#
+# Typing "/" opens the app's command menu and each letter filters it, which is
+# async work in a webview. The pad sends its keystrokes back-to-back over USB,
+# so without a pause the Enter arrives before the menu has settled and the
+# command is left sitting in the composer unsent -- which is exactly what
+# happened. The letters themselves land fine at full speed, so this is the only
+# gap needed.
+#
+# Tune it here if a slower moment leaves the command unsent.
+MENU_SETTLE = 0.4
+
+# Keys that type a fixed sequence of chords straight into whatever has focus.
+#
+# These live on the pad rather than going through the daemon for the same
+# reason dictation does: they are plain keystrokes with no session logic, so
+# routing them through the host would only add latency and a dependency on the
+# daemon being up. Each value is a tuple of chords, sent in order. A number is
+# a pause in seconds.
+#
 #   row 3 [1]   - open the command palette. One key reaches every skill, which
 #                 is why this beats binding a few: the app's own filtering does
 #                 the picking. Its composer says so -- "Type / for commands,
@@ -98,7 +118,7 @@ FOCUS_KEYS = tuple(k for row in ROWS for k in row if k not in DICTATION_KEYS)
 TYPING_KEYS = {
     ROWS[2][1]: ("slash",),
     ROWS[2][2]: ("shift+tab",),
-    ROWS[2][3]: ("slash", "c", "o", "m", "p", "a", "c", "t", "enter"),
+    ROWS[2][3]: ("slash", "c", "o", "m", "p", "a", "c", "t", MENU_SETTLE, "enter"),
     ROWS[3][0]: ("ctrl+a", "delete"),
     ROWS[3][3]: ("enter",),
 }
