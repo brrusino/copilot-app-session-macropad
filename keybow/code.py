@@ -26,6 +26,7 @@ import time
 import usb_cdc
 import usb_hid
 from adafruit_hid.keyboard import Keyboard
+from adafruit_hid.keyboard_layout_us import KeyboardLayoutUS
 from adafruit_hid.keycode import Keycode
 
 try:
@@ -49,6 +50,10 @@ keybow = PMK(Hardware())
 keys = keybow.keys
 
 _keyboard = Keyboard(usb_hid.devices)
+#: Types literal text, so a key can send a sentence without spelling it out
+#: one keycode at a time. Ships inside adafruit_hid, so this costs no new
+#: library on the pad.
+_layout = KeyboardLayoutUS(_keyboard)
 
 # Resolve the configured chord names to real Keycode values once at startup.
 # An unknown name is dropped with a REPL warning rather than crashing the
@@ -150,12 +155,23 @@ def _parse_chord(text):
 # press costs nothing but the keystrokes themselves.
 _TYPING_KEYS = {}
 for _key, _chords in getattr(config, "TYPING_KEYS", {}).items():
-    # A number is a pause, and passes through untouched.
-    _resolved = tuple(
-        c if isinstance(c, (int, float)) else _parse_chord(c) for c in _chords
-    )
-    if all(r or isinstance(r, (int, float)) for r in _resolved):
-        _TYPING_KEYS[_key] = _resolved
+    # Three kinds of entry: a number is a pause, "text:..." is literal text
+    # typed as-is, anything else is a chord to resolve.
+    _resolved = []
+    _ok = True
+    for _c in _chords:
+        if isinstance(_c, (int, float)):
+            _resolved.append(_c)
+        elif isinstance(_c, str) and _c.startswith("text:"):
+            _resolved.append(_c[5:])
+        else:
+            _parsed = _parse_chord(_c)
+            if not _parsed:
+                _ok = False
+                break
+            _resolved.append(_parsed)
+    if _ok:
+        _TYPING_KEYS[_key] = tuple(_resolved)
     else:
         print("config: TYPING_KEYS[%r] has an unusable chord, ignoring" % (_key,))
 
@@ -479,7 +495,10 @@ def _type_all(chords):
         if not chord:
             continue
         try:
-            _keyboard.send(*chord)
+            if isinstance(chord, str):
+                _layout.write(chord)
+            else:
+                _keyboard.send(*chord)
         except Exception:
             # A half-sent sequence is not a safer version of the whole one:
             # "select all" without the "delete" leaves your prompt selected and

@@ -107,9 +107,26 @@ def _install_stubs(monkeypatch):
     Keycode.FORWARD_SLASH = 0x38
 
     keycode_mod.Keycode = Keycode
+
+    # Literal-text typing, recorded on the same keyboard history so a test can
+    # assert the whole sequence in order.
+    layout_mod = types.ModuleType("adafruit_hid.keyboard_layout_us")
+
+    class KeyboardLayoutUS:
+        def __init__(self, keyboard):
+            self._keyboard = keyboard
+
+        def write(self, text):
+            self._keyboard.history.append(("write", text))
+
+    layout_mod.KeyboardLayoutUS = KeyboardLayoutUS
+
     monkeypatch.setitem(sys.modules, "adafruit_hid", hid_pkg)
     monkeypatch.setitem(sys.modules, "adafruit_hid.keyboard", keyboard_mod)
     monkeypatch.setitem(sys.modules, "adafruit_hid.keycode", keycode_mod)
+    monkeypatch.setitem(
+        sys.modules, "adafruit_hid.keyboard_layout_us", layout_mod
+    )
 
     pmk_pkg = types.ModuleType("pmk")
     platform_pkg = types.ModuleType("pmk.platform")
@@ -649,15 +666,24 @@ def test_a_pad_with_no_daemon_assumes_the_app_is_focused(firmware):
     press, which toggles -- it would minimise the app as often as raise it."""
     assert firmware._app_focused is True
 
-def test_the_palette_key_types_a_single_slash(firmware):
-    """One key reaches every skill because the app filters from there --
-    its composer says "Type / for commands"."""
+def test_the_rubber_duck_key_types_the_prompt(firmware):
+    """A key that typed a single "/" was useless -- it saved one character you
+    were already positioned to type. This one asks for something."""
     import config as fw_config
 
     firmware._app_focused = True
     firmware._on_down(fw_config.ROWS[2][1], 0.0)
-    sends = [e for e in firmware._test_keyboard.history if e[0] == "send"]
-    assert sends == [("send", (0x38,))]
+    history = firmware._test_keyboard.history
+    assert history == [("write", fw_config.RUBBER_DUCK_PROMPT)]
+    assert firmware._type_queue, "the Enter is held back"
+
+
+def test_the_rubber_duck_prompt_names_the_agent(firmware):
+    """Naming it makes the request a dispatch rather than an invitation to
+    muse about it in place."""
+    import config as fw_config
+
+    assert "rubber-duck agent" in fw_config.RUBBER_DUCK_PROMPT
 
 
 def test_the_mode_key_cycles_with_shift_tab(firmware):
@@ -674,23 +700,13 @@ def test_the_compact_key_waits_before_submitting(firmware):
     """Typing "/" opens the app's command menu and each letter filters it,
     which is async webview work. Sent back-to-back over USB, the Enter arrived
     before the menu had settled and left "/compact" sitting in the composer
-    unsent. The letters land fine at full speed, so only the Enter waits.
+    unsent. The text lands fine at full speed, so only the Enter waits.
     """
     import config as fw_config
 
     firmware._app_focused = True
     firmware._on_down(fw_config.ROWS[2][3], 0.0)
-    sends = [e[1] for e in firmware._test_keyboard.history if e[0] == "send"]
-    assert sends == [
-        (0x38,),   # /
-        (0x06,),   # c
-        (0x12,),   # o
-        (0x10,),   # m
-        (0x13,),   # p
-        (0x04,),   # a
-        (0x06,),   # c
-        (0x17,),   # t
-    ], "the command text goes at full speed"
+    assert firmware._test_keyboard.history == [("write", "/compact")]
     assert firmware._type_queue, "the Enter is held back"
 
 

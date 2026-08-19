@@ -15,7 +15,7 @@ Copilot app already exposes on your machine.
 +---------+---------+---------+---------+
 | session | session | session | session |   pinned sessions 5-8
 +---------+---------+---------+---------+
-|attention| palette |  mode   | compact |   act on state, and on the app
+|attention|  duck   |  mode   | compact |   act on state, and on the app
 +---------+---------+---------+---------+
 |  clear  |    dictation      |  enter  |   composer keys + push-to-talk
 +---------+---------+---------+---------+
@@ -272,7 +272,6 @@ Ctrl+Alt+\        open plan
 Ctrl+N            new session
 Ctrl+Shift+O      new chat
 Shift+Tab         cycle mode (plan / interactive / autopilot)
-/                 open the command palette
 ```
 
 Nothing here is a guess any more. The pad types all of them; the fixed ones
@@ -464,7 +463,7 @@ for why some setups have no transport available, and what to do about it.
 | key | keys sent |
 |---|---|
 | next attention | `Ctrl+<n>` for whichever session wants you |
-| command palette | `/` |
+| rubber duck | the prompt, then `Enter` |
 | cycle mode | `Shift+Tab` |
 | compact | `/compact` + `Enter` |
 | clear | `Ctrl+A`, `Delete` |
@@ -481,11 +480,13 @@ steps. This one acts on state instead: it goes to whichever session is asking,
 errored or unread, in that order, and repeated presses walk the list. That
 information is what the LEDs show and what nothing else on the pad can reach.
 
-**The palette key is one `/`.** The app's composer says *"Type / for commands,
-@ for files, # for issues or & for sessions"*, so a single key reaches every
-skill you have and the app's own filtering does the picking. Codex Micro needs
-a four-way joystick for this because it binds four fixed skills; opening the
-menu is strictly more.
+**The rubber-duck key types a request, not a keystroke.** An earlier version of
+this key typed a single `/` to open the command palette, which saved exactly one
+character you were already positioned to type — useless. It now types a prompt
+that names the `rubber-duck` agent explicitly, so the request lands as a
+dispatch rather than an invitation to muse, and appends to whatever is already
+in the composer so you can write the context first. Reword it via
+`RUBBER_DUCK_PROMPT` in `keybow/config.py`.
 
 **Enter is also how you approve.** There's no separate approve key: it types
 into whatever you're looking at, which is simpler and safer than having the
@@ -578,8 +579,16 @@ tool uses something else, change `DICTATION_CHORD` in `keybow/config.py` — it
 takes Adafruit HID keycode names, so no code change is needed.
 
 **Row 3 and 4 keystrokes** live in `TYPING_KEYS` in `keybow/config.py`. Each
-value is a tuple of chords sent in order, so a key can do more than one thing —
-clear is `Ctrl+A` then `Delete`.
+value is a tuple sent in order, and an entry is one of three things: a chord
+name (`ctrl+a`), a number meaning "pause this many seconds", or `text:...` for
+literal text. So a key can clear the composer with `Ctrl+A` then `Delete`, or
+type a whole sentence and submit it.
+
+The pause matters for anything that opens the app's command menu. Typing `/`
+opens it and each character filters it, which is async work in a webview — and
+the pad types far faster than that settles, so an Enter sent immediately after
+arrives before the menu is ready and leaves the command sitting unsent. Tune
+the wait via `MENU_SETTLE`.
 
 **Your taskbar position.** `FOCUS_APP_CHORD` in `keybow/config.py` must match
 where the Copilot app sits on your taskbar, or every key will raise the *wrong*

@@ -99,26 +99,34 @@ FOCUS_KEYS = tuple(k for row in ROWS for k in row if k not in DICTATION_KEYS)
 # Tune it here if a slower moment leaves the command unsent.
 MENU_SETTLE = 0.4
 
-# Keys that type a fixed sequence of chords straight into whatever has focus.
+# What the rubber-duck key types. Named here so the wording can be tuned
+# without touching code.
+#
+# It names the agent explicitly rather than asking in the abstract, so the
+# request lands as a dispatch rather than an invitation to muse. Appended to
+# whatever is already in the composer, so you can write the context first and
+# then hit the key.
+RUBBER_DUCK_PROMPT = "Use the rubber-duck agent to pressure-test this."
+
+# Keys that type a fixed sequence straight into whatever has focus.
 #
 # These live on the pad rather than going through the daemon for the same
 # reason dictation does: they are plain keystrokes with no session logic, so
 # routing them through the host would only add latency and a dependency on the
-# daemon being up. Each value is a tuple of chords, sent in order. A number is
-# a pause in seconds.
+# daemon being up.
 #
-#   row 3 [1]   - open the command palette. One key reaches every skill, which
-#                 is why this beats binding a few: the app's own filtering does
-#                 the picking. Its composer says so -- "Type / for commands,
-#                 @ for files, # for issues or & for sessions".
+# Each value is a tuple, sent in order. An entry is either a chord name, a
+# number meaning "pause this many seconds", or "text:..." for literal text.
+#
+#   row 3 [1]   - rubber duck: pressure-test what we just did
 #   row 3 [2]   - cycle mode: plan -> interactive -> autopilot
 #   row 3 [3]   - compact this session
 #   row 4 left  - clear the composer: select everything, then delete it
 #   row 4 right - submit, which is also how you approve a prompt
 TYPING_KEYS = {
-    ROWS[2][1]: ("slash",),
+    ROWS[2][1]: ("text:" + RUBBER_DUCK_PROMPT, MENU_SETTLE, "enter"),
     ROWS[2][2]: ("shift+tab",),
-    ROWS[2][3]: ("slash", "c", "o", "m", "p", "a", "c", "t", MENU_SETTLE, "enter"),
+    ROWS[2][3]: ("text:/compact", MENU_SETTLE, "enter"),
     ROWS[3][0]: ("ctrl+a", "delete"),
     ROWS[3][3]: ("enter",),
 }
