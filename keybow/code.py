@@ -120,6 +120,7 @@ _CHORD_ALIASES = {
     "comma": "COMMA",
     "period": "PERIOD",
     "backslash": "BACKSLASH",
+    "slash": "FORWARD_SLASH",
 }
 
 _DIGIT_BY_CHAR = dict(zip("123456789", _DIGIT_NAMES))

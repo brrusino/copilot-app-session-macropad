@@ -61,61 +61,49 @@ def session(slot: int, **kwargs) -> PinnedSession:
     )
 
 
-def test_next_session_steps_forward_through_the_pinned_list(daemon, monkeypatch):
-    """Needs no shortcut of its own: the pad's keys already are the pinned
-    list, so stepping is working out the neighbour and typing its Ctrl+<n>."""
-    daemon.store.apply_snapshot([session(0), session(1), session(2)])
-    monkeypatch.setattr(daemon.db, "focused_ids", lambda: {"s-0"})
+def test_next_attention_goes_to_the_session_that_wants_you(daemon):
+    """The one action a session key cannot replace: rows 1 and 2 already give
+    random access to every pin, so this has to act on state instead."""
+    daemon.store.apply_snapshot(
+        [session(0), session(1, unread=True), session(2)]
+    )
 
-    daemon._run_action("next_session")
-
-    assert daemon.link.sent == [{"t": "type", "v": "ctrl+2"}]
-
-
-def test_previous_session_steps_back(daemon, monkeypatch):
-    daemon.store.apply_snapshot([session(0), session(1), session(2)])
-    monkeypatch.setattr(daemon.db, "focused_ids", lambda: {"s-2"})
-
-    daemon._run_action("previous_session")
+    daemon._run_action("next_attention")
 
     assert daemon.link.sent == [{"t": "type", "v": "ctrl+2"}]
 
 
-def test_stepping_wraps_at_the_ends(daemon, monkeypatch):
-    """This is a key you press repeatedly to walk the list, so stopping dead
-    at the end is worse than coming round again."""
-    daemon.store.apply_snapshot([session(0), session(1), session(2)])
-    monkeypatch.setattr(daemon.db, "focused_ids", lambda: {"s-2"})
+def test_a_question_outranks_unread(daemon):
+    """Priority mirrors urgency: a question blocks the agent outright."""
+    daemon.store.apply_snapshot(
+        [session(0, unread=True), session(1, asking=True, asking_at=1.0)]
+    )
 
-    daemon._run_action("next_session")
+    daemon._run_action("next_attention")
 
-    assert daemon.link.sent == [{"t": "type", "v": "ctrl+1"}]
+    assert daemon.link.sent == [{"t": "type", "v": "ctrl+2"}]
 
 
-def test_stepping_only_visits_slots_that_have_a_session(daemon, monkeypatch):
-    """Slots past the end of your pins are empty and must not be landed on."""
+def test_repeated_presses_walk_the_list(daemon):
+    """Otherwise it sticks on the first match and you can never reach the
+    second thing that wants you."""
+    daemon.store.apply_snapshot(
+        [session(0, unread=True), session(1, unread=True)]
+    )
+
+    daemon._run_action("next_attention")
+    daemon._run_action("next_attention")
+
+    assert daemon.link.sent == [
+        {"t": "type", "v": "ctrl+1"},
+        {"t": "type", "v": "ctrl+2"},
+    ]
+
+
+def test_nothing_needing_attention_does_nothing(daemon):
     daemon.store.apply_snapshot([session(0), session(1)])
-    monkeypatch.setattr(daemon.db, "focused_ids", lambda: {"s-1"})
-
-    daemon._run_action("next_session")
-
-    # Wraps back to the first rather than stepping into slot 3 of 8, which has
-    # nothing behind it.
-    assert daemon.link.sent == [{"t": "type", "v": "ctrl+1"}]
-
-
-def test_stepping_from_nowhere_starts_at_an_end(daemon, monkeypatch):
-    """With the app on something unpinned there is nothing to step from, and
-    refusing to move at all would just look broken."""
-    daemon.store.apply_snapshot([session(0), session(1)])
-    monkeypatch.setattr(daemon.db, "focused_ids", lambda: {"unrelated"})
-
-    daemon._run_action("next_session")
-    assert daemon.link.sent == [{"t": "type", "v": "ctrl+1"}]
-
-    daemon.link.sent.clear()
-    daemon._run_action("previous_session")
-    assert daemon.link.sent == [{"t": "type", "v": "ctrl+2"}]
+    daemon._run_action("next_attention")
+    assert daemon.link.sent == []
 
 
 def test_actions_never_call_sendinput(daemon, monkeypatch):
@@ -127,9 +115,8 @@ def test_actions_never_call_sendinput(daemon, monkeypatch):
     monkeypatch.setattr(main_module.actions, "send_chord", fail)
     monkeypatch.setattr(main_module.actions, "focus_then_chord", fail)
 
-    daemon.store.apply_snapshot([session(0), session(1)])
-    for action in ("next_session", "previous_session"):
-        daemon._run_action(action)
+    daemon.store.apply_snapshot([session(0), session(1, unread=True)])
+    daemon._run_action("next_attention")
 
 
 def test_an_old_pad_is_reported_once(daemon, caplog):

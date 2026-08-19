@@ -376,3 +376,25 @@ class StateStore:
         """State string per slot, padded to ``slot_count`` with ``empty``."""
         states = [self.resolve(self.session_for_slot(i)) for i in range(self.slot_count)]
         return states
+
+    def next_attention_slot(self, after: int | None = None) -> int | None:
+        """First slot wanting attention, in priority order, cycling from ``after``.
+
+        Priority mirrors urgency: a question blocks the agent outright, an error
+        needs diagnosis, unread output merely wants reading.
+
+        This is the one thing a session key cannot do. Rows 1 and 2 give random
+        access to all eight pins, so stepping through them adds nothing -- but
+        "take me to whoever needs me" acts on state only the daemon knows, and
+        gets more useful as the number of live sessions grows.
+        """
+        states = self.slot_states()
+        order = (NEEDS_APPROVAL, ERROR, UNREAD)
+        start = 0 if after is None else (after + 1) % self.slot_count
+        rotation = [(start + i) % self.slot_count for i in range(self.slot_count)]
+
+        for wanted in order:
+            for slot in rotation:
+                if states[slot] == wanted:
+                    return slot
+        return None

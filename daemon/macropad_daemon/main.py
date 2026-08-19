@@ -66,6 +66,9 @@ class Daemon:
         #: Session key most recently pressed, used to target actions that need
         #: a subject (interrupt) without guessing.
         self._last_session_slot: int | None = None
+        #: Where the attention key last landed, so repeated presses walk the
+        #: list rather than sticking on the first match.
+        self._last_attention_slot: int | None = None
         #: Pad protocol version, learned from its hello or heartbeat.
         self._pad_firmware: int | None = None
         #: Whether the app was frontmost at the last check, so the pad is only
@@ -265,44 +268,16 @@ class Daemon:
                 return slot
         return None
 
-    def _step_session(self, delta: int) -> None:
-        """Move to the neighbouring pinned session.
-
-        Needs no shortcut of its own: the pad's keys already *are* the pinned
-        list, so stepping is just working out the neighbouring slot and typing
-        its Ctrl+<n>. Empty slots are skipped, and the ends wrap, because this
-        is a key you press repeatedly to walk the list.
-        """
-        occupied = [
-            slot
-            for slot in range(self.cfg.slot_count)
-            if (s := self.store.session_for_slot(slot)) is not None and s.focusable
-        ]
-        if not occupied:
-            log.info("no pinned sessions to step through")
-            return
-
-        anchor = self._focused_slot()
-        if anchor is None:
-            anchor = self._last_session_slot
-        if anchor is None or anchor not in occupied:
-            # Nothing to step from, so start at whichever end you are heading
-            # towards rather than refusing to move at all.
-            target = occupied[0] if delta > 0 else occupied[-1]
-        else:
-            target = occupied[(occupied.index(anchor) + delta) % len(occupied)]
-
-        self._switch_to(target)
-
     def _run_action(self, name: str) -> None:
         log.info("action %s", name)
 
-        if name == "previous_session":
-            self._step_session(-1)
-            return
-
-        if name == "next_session":
-            self._step_session(1)
+        if name == "next_attention":
+            slot = self.store.next_attention_slot(after=self._last_attention_slot)
+            if slot is None:
+                log.info("nothing needs attention")
+                return
+            self._last_attention_slot = slot
+            self._switch_to(slot)
             return
 
         log.warning("unknown action %r", name)

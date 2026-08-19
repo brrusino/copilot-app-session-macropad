@@ -103,6 +103,7 @@ def _install_stubs(monkeypatch):
     Keycode.BACKSLASH = 0x31
     Keycode.BACKSPACE = 0x2A
     Keycode.DELETE = 0x4C
+    Keycode.FORWARD_SLASH = 0x38
 
     keycode_mod.Keycode = Keycode
     monkeypatch.setitem(sys.modules, "adafruit_hid", hid_pkg)
@@ -646,3 +647,44 @@ def test_a_pad_with_no_daemon_assumes_the_app_is_focused(firmware):
     """Assuming the opposite makes an unattended pad send Win+<n> on every
     press, which toggles -- it would minimise the app as often as raise it."""
     assert firmware._app_focused is True
+
+def test_the_palette_key_types_a_single_slash(firmware):
+    """One key reaches every skill because the app filters from there --
+    its composer says "Type / for commands"."""
+    import config as fw_config
+
+    firmware._app_focused = True
+    firmware._on_down(fw_config.ROWS[2][1], 0.0)
+    sends = [e for e in firmware._test_keyboard.history if e[0] == "send"]
+    assert sends == [("send", (0x38,))]
+
+
+def test_the_mode_key_cycles_with_shift_tab(firmware):
+    """Verified enabled on this install: modeCycleShiftTabEnabled is true."""
+    import config as fw_config
+
+    firmware._app_focused = True
+    firmware._on_down(fw_config.ROWS[2][2], 0.0)
+    sends = [e for e in firmware._test_keyboard.history if e[0] == "send"]
+    assert sends == [("send", ("LEFT_SHIFT", 0x2B))]
+
+
+def test_the_compact_key_types_the_whole_command(firmware):
+    """A partly-typed command would leave the palette open on something else,
+    and the trailing Enter would run whatever it had filtered to."""
+    import config as fw_config
+
+    firmware._app_focused = True
+    firmware._on_down(fw_config.ROWS[2][3], 0.0)
+    sends = [e[1] for e in firmware._test_keyboard.history if e[0] == "send"]
+    assert sends == [
+        (0x38,),   # /
+        (0x06,),   # c
+        (0x12,),   # o
+        (0x10,),   # m
+        (0x13,),   # p
+        (0x04,),   # a
+        (0x06,),   # c
+        (0x17,),   # t
+        (0x28,),   # enter
+    ]

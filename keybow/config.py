@@ -40,12 +40,10 @@ SESSION_KEYS = ROWS[0] + ROWS[1]
 
 # Row 3, left to right.
 #
-# The first two are fixed chords the pad types itself (see TYPING_KEYS); only
-# the last two need the host, because "previous" and "next" depend on which
-# session is currently open and the pad cannot know that.
+# Only the first needs the host: "which session wants me" is derived from
+# state the pad cannot see. The other three are fixed chords it types itself.
 ACTION_KEYS = {
-    ROWS[2][2]: "previous_session",
-    ROWS[2][3]: "next_session",
+    ROWS[2][0]: "next_attention",
 }
 
 # Dictation: two adjacent bottom-row keys driving ONE push-to-talk chord.
@@ -89,13 +87,18 @@ FOCUS_KEYS = tuple(k for row in ROWS for k in row if k not in DICTATION_KEYS)
 # routing them through the host would only add latency and a dependency on the
 # daemon being up. Each value is a tuple of chords, sent in order.
 #
-#   row 3 left  - new chat
-#   row 3 next  - new session
+#   row 3 [1]   - open the command palette. One key reaches every skill, which
+#                 is why this beats binding a few: the app's own filtering does
+#                 the picking. Its composer says so -- "Type / for commands,
+#                 @ for files, # for issues or & for sessions".
+#   row 3 [2]   - cycle mode: plan -> interactive -> autopilot
+#   row 3 [3]   - compact this session
 #   row 4 left  - clear the composer: select everything, then delete it
 #   row 4 right - submit, which is also how you approve a prompt
 TYPING_KEYS = {
-    ROWS[2][0]: ("ctrl+shift+o",),
-    ROWS[2][1]: ("ctrl+n",),
+    ROWS[2][1]: ("slash",),
+    ROWS[2][2]: ("shift+tab",),
+    ROWS[2][3]: ("slash", "c", "o", "m", "p", "a", "c", "t", "enter"),
     ROWS[3][0]: ("ctrl+a", "delete"),
     ROWS[3][3]: ("enter",),
 }

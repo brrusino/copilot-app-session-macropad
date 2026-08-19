@@ -15,7 +15,7 @@ Copilot app already exposes on your machine.
 +---------+---------+---------+---------+
 | session | session | session | session |   pinned sessions 5-8
 +---------+---------+---------+---------+
-|new chat |new sess.|  prev   |  next   |   create and navigate
+|attention| palette |  mode   | compact |   act on state, and on the app
 +---------+---------+---------+---------+
 |  clear  |    dictation      |  enter  |   composer keys + push-to-talk
 +---------+---------+---------+---------+
@@ -271,6 +271,8 @@ Ctrl+[ / Ctrl+]   back / forward
 Ctrl+Alt+\        open plan
 Ctrl+N            new session
 Ctrl+Shift+O      new chat
+Shift+Tab         cycle mode (plan / interactive / autopilot)
+/                 open the command palette
 ```
 
 Nothing here is a guess any more. The pad types all of them; the fixed ones
@@ -461,24 +463,29 @@ for why some setups have no transport available, and what to do about it.
 
 | key | keys sent |
 |---|---|
-| new chat | `Ctrl+Shift+O` |
-| new session | `Ctrl+N` |
-| previous session | `Ctrl+<n-1>` |
-| next session | `Ctrl+<n+1>` |
+| next attention | `Ctrl+<n>` for whichever session wants you |
+| command palette | `/` |
+| cycle mode | `Shift+Tab` |
+| compact | `/compact` + `Enter` |
 | clear | `Ctrl+A`, `Delete` |
 | enter | `Enter` |
 
-**Six of the eight are typed by the pad itself**, like dictation: they're fixed
-chords with no session logic, so routing them through the daemon would only add
-latency and a dependency on it being up.
+**Seven of the eight are typed by the pad itself**, like dictation: they're
+fixed chords with no session logic, so routing them through the daemon would
+only add latency and a dependency on it being up.
 
-**Previous and next need no shortcut of their own.** The pad's keys already
-*are* your pinned list, so stepping is just working out the neighbouring slot
-and typing its `Ctrl+<n>`. That's the daemon's one contribution here — it knows
-the pin order and which session is open. Empty slots are skipped and the ends
-wrap, since this is a key you press repeatedly to walk the list. With the app
-on something unpinned there's nothing to step from, so it starts at whichever
-end you're heading towards.
+**Next attention is the exception, and the reason row 3 exists.** Rows 1 and 2
+already give random access to all eight pins, so a key that merely *steps*
+through them adds nothing — measured 187 direct session presses against 16
+steps. This one acts on state instead: it goes to whichever session is asking,
+errored or unread, in that order, and repeated presses walk the list. That
+information is what the LEDs show and what nothing else on the pad can reach.
+
+**The palette key is one `/`.** The app's composer says *"Type / for commands,
+@ for files, # for issues or & for sessions"*, so a single key reaches every
+skill you have and the app's own filtering does the picking. Codex Micro needs
+a four-way joystick for this because it binds four fixed skills; opening the
+menu is strictly more.
 
 **Enter is also how you approve.** There's no separate approve key: it types
 into whatever you're looking at, which is simpler and safer than having the
