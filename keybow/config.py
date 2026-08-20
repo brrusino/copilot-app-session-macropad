@@ -174,17 +174,22 @@ PALETTE = {
     # down" and "this session is idle" are completely different situations and
     # two shades of dim white are impossible to tell apart on these LEDs.
     "disconnected":   ((0, 0, 45),      "solid"),
-    # Action keys sit dim until pressed.
-    "action":         ((60, 40, 90),    "solid"),
-    "action_active":  ((200, 150, 255), "solid"),
-    # Dictation keys: dim normally, hot while the chord is held.
+    # The bottom two rows are BACKLIT: their keycaps have a glyph cut through
+    # them, and the LED is what makes that legend readable. So they rest near
+    # maximum rather than dim -- the resting colour *is* the label, and a small
+    # aperture throws away most of the light before it reaches your eye.
+    #
+    # Hue still separates the three groups, but every one is pushed to the top
+    # of its range. Pressed states stay brighter still by going toward white,
+    # which is the only headroom left above a saturated colour.
+    "action":         ((190, 130, 255), "solid"),
+    "action_active":  ((235, 215, 255), "solid"),
+    # Dictation is the exception: its keycaps carry no glyph to light, so it
+    # keeps the original dim resting colour and goes hot only while held.
     "dictation":      ((70, 30, 60),    "solid"),
     "dictation_live": ((255, 60, 140),  "solid"),
-    # Keys that type straight into the composer -- clear and submit. A hue of
-    # their own, because pressing one edits your prompt rather than steering a
-    # session, and confusing the two is expensive.
-    "typing":         ((25, 70, 60),   "solid"),
-    "typing_active":  ((80, 255, 200), "solid"),
+    "typing":         ((60, 255, 200),  "solid"),
+    "typing_active":  ((215, 255, 245), "solid"),
     # Momentary flash confirming a session key press was registered. The app
     # takes several seconds to navigate, so without this the pad appears to
     # have ignored you.
