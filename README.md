@@ -463,7 +463,7 @@ for why some setups have no transport available, and what to do about it.
 | key | keys sent |
 |---|---|
 | next attention | `Ctrl+<n>` for whichever session wants you |
-| rubber duck | the prompt, then `Enter` |
+| rubber duck | `/rubber-duck` + `Enter` |
 | cycle mode | `Shift+Tab` |
 | compact | `/compact` + `Enter` |
 | clear | `Ctrl+A`, `Delete` |
@@ -480,13 +480,14 @@ steps. This one acts on state instead: it goes to whichever session is asking,
 errored or unread, in that order, and repeated presses walk the list. That
 information is what the LEDs show and what nothing else on the pad can reach.
 
-**The rubber-duck key types a request, not a keystroke.** An earlier version of
-this key typed a single `/` to open the command palette, which saved exactly one
-character you were already positioned to type — useless. It now types a prompt
-that names the `rubber-duck` agent explicitly, so the request lands as a
-dispatch rather than an invitation to muse, and appends to whatever is already
-in the composer so you can write the context first. Reword it via
-`RUBBER_DUCK_PROMPT` in `keybow/config.py`.
+**The rubber-duck key types the app's own command.** An earlier version typed a
+single `/` to open the command palette, which saved exactly one character you
+were already positioned to type — useless. A version after that typed a
+*sentence* asking for a rubber-duck review, which worked but depended on an
+agent reading the wording and deciding what was meant. The app has a
+first-class `/rubber-duck` command (from the `rubber_duck` experiment), so the
+key types that instead and the app dispatches it directly. It appends to
+whatever is already in the composer, so you can write the context first.
 
 **Enter is also how you approve.** There's no separate approve key: it types
 into whatever you're looking at, which is simpler and safer than having the

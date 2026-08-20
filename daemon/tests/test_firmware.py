@@ -666,24 +666,24 @@ def test_a_pad_with_no_daemon_assumes_the_app_is_focused(firmware):
     press, which toggles -- it would minimise the app as often as raise it."""
     assert firmware._app_focused is True
 
-def test_the_rubber_duck_key_types_the_prompt(firmware):
-    """A key that typed a single "/" was useless -- it saved one character you
-    were already positioned to type. This one asks for something."""
+def test_the_rubber_duck_key_types_the_command(firmware):
+    """The app has a first-class /rubber-duck command, so type that rather
+    than a sentence asking for the same thing."""
     import config as fw_config
 
     firmware._app_focused = True
     firmware._on_down(fw_config.ROWS[2][1], 0.0)
     history = firmware._test_keyboard.history
-    assert history == [("write", fw_config.RUBBER_DUCK_PROMPT)]
+    assert history == [("write", "/rubber-duck")]
     assert firmware._type_queue, "the Enter is held back"
 
 
-def test_the_rubber_duck_prompt_names_the_agent(firmware):
-    """Naming it makes the request a dispatch rather than an invitation to
-    muse about it in place."""
+def test_the_rubber_duck_binding_is_a_slash_command(firmware):
+    """A sentence would depend on an agent reading the wording and deciding
+    what was meant; a command is dispatched directly."""
     import config as fw_config
 
-    assert "rubber-duck agent" in fw_config.RUBBER_DUCK_PROMPT
+    assert fw_config.RUBBER_DUCK_COMMAND.startswith("/")
 
 
 def test_the_mode_key_cycles_with_shift_tab(firmware):

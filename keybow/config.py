@@ -99,14 +99,15 @@ FOCUS_KEYS = tuple(k for row in ROWS for k in row if k not in DICTATION_KEYS)
 # Tune it here if a slower moment leaves the command unsent.
 MENU_SETTLE = 0.4
 
-# What the rubber-duck key types. Named here so the wording can be tuned
-# without touching code.
+# The app's own command for the rubber-duck subagent.
 #
-# It names the agent explicitly rather than asking in the abstract, so the
-# request lands as a dispatch rather than an invitation to muse. Appended to
-# whatever is already in the composer, so you can write the context first and
-# then hit the key.
-RUBBER_DUCK_PROMPT = "Use the rubber-duck agent to pressure-test this."
+# This is a first-class slash command, not a sentence: the `rubber_duck`
+# experiment adds /rubber-duck to the composer. Typing the command beats typing
+# a request that asks for the same thing, because the app dispatches it
+# directly instead of an agent having to read the wording and decide what was
+# meant. Appended to whatever is already in the composer, so you can write the
+# context first and then hit the key.
+RUBBER_DUCK_COMMAND = "/rubber-duck"
 
 # Keys that type a fixed sequence straight into whatever has focus.
 #
@@ -124,7 +125,7 @@ RUBBER_DUCK_PROMPT = "Use the rubber-duck agent to pressure-test this."
 #   row 4 left  - clear the composer: select everything, then delete it
 #   row 4 right - submit, which is also how you approve a prompt
 TYPING_KEYS = {
-    ROWS[2][1]: ("text:" + RUBBER_DUCK_PROMPT, MENU_SETTLE, "enter"),
+    ROWS[2][1]: ("text:" + RUBBER_DUCK_COMMAND, MENU_SETTLE, "enter"),
     ROWS[2][2]: ("shift+tab",),
     ROWS[2][3]: ("text:/compact", MENU_SETTLE, "enter"),
     ROWS[3][0]: ("ctrl+a", "delete"),
