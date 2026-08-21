@@ -736,3 +736,181 @@ def test_the_pause_does_not_stall_the_key_loop(firmware):
     before = time.monotonic()
     firmware._on_down(fw_config.ROWS[2][3], 0.0)
     assert time.monotonic() - before < 0.1
+
+
+# --- brightness levels ----------------------------------------------------
+# The pad lives on a desk, and a desk is a different room at 9am than at 11pm.
+# One scale for the whole pad: the palette already fixed the ratio between the
+# status rows and the backlit ones, and that ratio is right in any light.
+
+
+def _hold(firmware, key, seconds):
+    """Press a key, hold it that long, then let go."""
+    firmware._on_down(key, 0.0)
+    firmware._check_brightness_hold(seconds)
+    firmware._on_up(key, seconds)
+
+
+def test_levels_are_ordered_and_bracket_the_tuned_value(firmware):
+    """The tuned level has to be one of them, or the setting that was arrived
+    at by eye could not be selected."""
+    import config as fw_config
+
+    assert list(fw_config.BRIGHTNESS_LEVELS) == sorted(fw_config.BRIGHTNESS_LEVELS)
+    assert fw_config.BRIGHTNESS in fw_config.BRIGHTNESS_LEVELS
+    assert fw_config.BRIGHTNESS_LEVELS[0] < fw_config.BRIGHTNESS
+    assert fw_config.BRIGHTNESS_LEVELS[-1] > fw_config.BRIGHTNESS
+
+
+def test_holding_the_key_steps_up_a_level(firmware):
+    import config as fw_config
+
+    assert firmware._brightness == fw_config.BRIGHTNESS_LEVELS[1]
+    _hold(firmware, fw_config.BRIGHTNESS_KEY, fw_config.BRIGHTNESS_HOLD_SECS)
+    assert firmware._brightness == fw_config.BRIGHTNESS_LEVELS[2]
+
+
+def test_the_level_changes_while_the_key_is_still_down(firmware):
+    """Otherwise you hold a key with no idea whether anything is happening,
+    and have to let go to find out."""
+    import config as fw_config
+
+    firmware._on_down(fw_config.BRIGHTNESS_KEY, 0.0)
+    firmware._check_brightness_hold(fw_config.BRIGHTNESS_HOLD_SECS)
+    assert firmware._brightness == fw_config.BRIGHTNESS_LEVELS[2]
+
+
+def test_the_top_level_wraps_back_to_the_bottom(firmware):
+    import config as fw_config
+
+    for _ in range(len(fw_config.BRIGHTNESS_LEVELS)):
+        _hold(firmware, fw_config.BRIGHTNESS_KEY, fw_config.BRIGHTNESS_HOLD_SECS)
+    assert firmware._brightness == fw_config.BRIGHTNESS_LEVELS[1]
+
+    _hold(firmware, fw_config.BRIGHTNESS_KEY, fw_config.BRIGHTNESS_HOLD_SECS)
+    assert firmware._brightness == fw_config.BRIGHTNESS_LEVELS[2]
+
+
+def test_a_hold_fires_the_level_once_however_long_it_is_held(firmware):
+    import config as fw_config
+
+    firmware._on_down(fw_config.BRIGHTNESS_KEY, 0.0)
+    for elapsed in (1.0, 2.0, 5.0):
+        firmware._check_brightness_hold(elapsed)
+    assert firmware._brightness == fw_config.BRIGHTNESS_LEVELS[2]
+
+
+def test_a_hold_does_not_run_the_key_s_normal_action(firmware):
+    """The whole point of choosing this key: its action is the host's to run,
+    from an event the pad can decline to send."""
+    import config as fw_config
+
+    sent = []
+    firmware._send = lambda obj: sent.append(obj)
+
+    _hold(firmware, fw_config.BRIGHTNESS_KEY, fw_config.BRIGHTNESS_HOLD_SECS)
+    assert not [e for e in sent if e.get("t") == "down"]
+
+
+def test_a_hold_does_not_raise_the_app(firmware):
+    """Changing the brightness is not a reason to pull the app in front of
+    whatever you were looking at."""
+    import config as fw_config
+
+    firmware._app_focused = False
+    _hold(firmware, fw_config.BRIGHTNESS_KEY, fw_config.BRIGHTNESS_HOLD_SECS)
+    assert [e for e in firmware._test_keyboard.history if e[0] == "send"] == []
+
+
+def test_a_tap_still_does_what_it_always_did(firmware):
+    import config as fw_config
+
+    sent = []
+    firmware._send = lambda obj: sent.append(obj)
+    firmware._app_focused = False
+
+    _hold(firmware, fw_config.BRIGHTNESS_KEY, 0.05)
+
+    assert firmware._brightness == fw_config.BRIGHTNESS_LEVELS[1], "level unchanged"
+    press = [e for e in sent if e.get("t") == "down"]
+    assert len(press) == 1
+    assert press[0]["action"] == fw_config.ACTION_KEYS[fw_config.BRIGHTNESS_KEY]
+    # And it still raises the app first, just on the release rather than the press.
+    sends = [e for e in firmware._test_keyboard.history if e[0] == "send"]
+    assert sends == [("send", ("LEFT_GUI", 0x24))]   # win+7
+
+
+def test_the_press_is_reported_before_the_release(firmware):
+    """A host that saw them the other way round would act on a key it had
+    already been told was up."""
+    import config as fw_config
+
+    sent = []
+    firmware._send = lambda obj: sent.append(obj)
+    _hold(firmware, fw_config.BRIGHTNESS_KEY, 0.05)
+    assert [e["t"] for e in sent] == ["down", "up"]
+
+
+def test_the_key_still_lights_up_on_the_way_down(firmware):
+    """Deferring what the press *means* must not defer telling you it landed."""
+    import config as fw_config
+
+    firmware._on_down(fw_config.BRIGHTNESS_KEY, 0.0)
+    assert firmware._action_flash.get(fw_config.BRIGHTNESS_KEY, 0) > 0.0
+
+
+def test_gain_above_one_brightens_a_backlit_key(firmware):
+    """The bottom rows are legends, and in daylight they have to be readable.
+    Their strongest channel is already at 255, so the gain has to land
+    somewhere -- it lifts the weaker ones and the key washes toward white."""
+    import config as fw_config
+
+    key = fw_config.ROWS[2][1]           # a typing key: (60, 255, 200)
+    firmware._handle_message({"t": "brightness", "v": 2.0})
+    assert firmware._resolve(key, 0.0, connected=True) == (120, 255, 255)
+
+
+def test_a_channel_never_overflows_the_hardware(firmware):
+    import config as fw_config
+
+    firmware._handle_message({"t": "brightness", "v": 50.0})
+    for key in range(16):
+        for channel in firmware._resolve(key, 0.0, connected=True):
+            assert 0 <= channel <= 255
+
+
+def test_the_host_can_retune_the_levels(firmware):
+    """The room the levels are wrong in is rarely the one with a Mac and a
+    USB cable in it."""
+    import config as fw_config
+
+    firmware._handle_message({"t": "levels", "v": [0.5, 0.9]})
+    _hold(firmware, fw_config.BRIGHTNESS_KEY, fw_config.BRIGHTNESS_HOLD_SECS)
+    assert firmware._brightness == 0.5   # 1.0 is above both, so it wraps
+
+
+def test_unusable_levels_are_ignored(firmware):
+    import config as fw_config
+
+    before = tuple(firmware._levels)
+    for bad in ([], [0], ["dim"], None, [-1]):
+        firmware._handle_message({"t": "levels", "v": bad})
+        assert tuple(firmware._levels) == before
+
+
+def test_a_level_chosen_on_the_pad_survives_a_reconnect(firmware):
+    """The pad reconnects on its own several times an hour and the host pushes
+    its configured brightness on every connect. Reverting minutes later looks
+    like the key not working."""
+    import config as fw_config
+
+    _hold(firmware, fw_config.BRIGHTNESS_KEY, fw_config.BRIGHTNESS_HOLD_SECS)
+    chosen = firmware._brightness
+
+    firmware._handle_message({"t": "brightness", "v": fw_config.BRIGHTNESS})
+    assert firmware._brightness == chosen
+
+
+def test_the_host_still_sets_brightness_until_you_choose_one(firmware):
+    firmware._handle_message({"t": "brightness", "v": 0.5})
+    assert firmware._brightness == 0.5

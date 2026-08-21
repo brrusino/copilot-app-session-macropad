@@ -73,6 +73,24 @@ def test_led_overrides(tmp_path):
     assert cfg.palette["idle"] == [[1, 2, 3], "solid"]
 
 
+def test_brightness_levels_are_sorted_and_deduplicated(tmp_path):
+    """The pad steps to the next level up, so the order is what makes the key
+    predictable rather than a matter of how they were typed."""
+    path = write(tmp_path, "[leds]\nlevels = [1.6, 0.35, 1.0, 1.6]\n")
+    assert config_module.load(path).brightness_levels == [0.35, 1.0, 1.6]
+
+
+def test_unusable_brightness_levels_are_dropped(tmp_path):
+    """Zero is not a level, it is the pad looking broken."""
+    path = write(tmp_path, "[leds]\nlevels = [0, 0.5, -1]\n")
+    assert config_module.load(path).brightness_levels == [0.5]
+
+
+def test_no_levels_configured_leaves_the_firmware_defaults(tmp_path):
+    path = write(tmp_path, "[leds]\nbrightness = 1.0\n")
+    assert config_module.load(path).brightness_levels == []
+
+
 def test_daemon_section(tmp_path):
     path = write(
         tmp_path,

@@ -42,6 +42,7 @@ SESSION_KEYS = ROWS[0] + ROWS[1]
 #
 # Only the first needs the host: "which session wants me" is derived from
 # state the pad cannot see. The other three are fixed chords it types itself.
+# The first also doubles as the brightness key when held -- see BRIGHTNESS_KEY.
 ACTION_KEYS = {
     ROWS[2][0]: "next_attention",
 }
@@ -151,13 +152,53 @@ FREE_KEYS = ()
 #   Ctrl+1 .. Ctrl+8 -> session slots 0-7, in pinned order
 SEND_SESSION_SHORTCUTS = True
 
-# Global brightness scale applied to every colour, 0.0-1.0.
+# Global brightness scale applied to every colour.
 #
-# Left at full: the palette below carries the actual levels, tuned by eye
-# against real keycaps. Scaling here as well would mean two knobs for one
+# The palette below carries the tuned levels, set by eye against real keycaps,
+# so this starts at full: scaling here as well would mean two knobs for one
 # effect, and a pad running without a daemon would render dimmer than the same
 # palette does with one.
 BRIGHTNESS = 1.0
+
+# The levels BRIGHTNESS_KEY cycles through, lowest first.
+#
+# One scale for the whole pad rather than one per row. The palette tuning
+# already fixed the *ratio* between the status rows and the backlit ones, and
+# that ratio is still right in any light -- what changes with the room is how
+# much light needs to leave the pad in total. Scaling everything together moves
+# that without disturbing what was already correct.
+#
+# Above 1.0 the bottom rows have almost no headroom left, since their strongest
+# channel is already at 255. The gain lifts their weaker channels instead, so
+# they brighten by washing toward white rather than by getting more saturated.
+# That is the only headroom a near-maximum colour has, and in daylight being
+# readable matters more than being purple. The status rows are dim enough to
+# have real headroom, so they simply get brighter.
+#
+# Starting points, not settled values -- the room they are wrong in is the one
+# to fix them from. The host pushes these on connect, so they can be retuned in
+# macropad.toml without a reflash.
+BRIGHTNESS_LEVELS = (0.35, 1.0, 1.6)
+
+# Hold this key to cycle BRIGHTNESS_LEVELS; tap it for its normal job.
+#
+# Every key already has a job, so a new gesture has to share one. This key is
+# the only candidate: it is the one key whose effect is decided entirely by the
+# host, from an event the pad chooses whether to send, so a hold can be kept
+# from firing it. Every other key acts the moment it goes down -- by typing a
+# chord itself, or by being a keystroke -- and a hold would fire that first.
+#
+# The cost is that its normal action is dispatched on release rather than on
+# press: a press cannot be told from a hold until it ends. A tap is over in
+# well under the threshold, so the added delay is the length of your own tap.
+BRIGHTNESS_KEY = ROWS[2][0]
+
+# How long BRIGHTNESS_KEY must be held to mean "change brightness".
+#
+# Comfortably longer than a deliberate tap, short enough not to feel stuck. The
+# level changes at the moment the threshold passes rather than on release, so
+# the pad answers while you are still holding it.
+BRIGHTNESS_HOLD_SECS = 0.6
 
 # Semantic state -> (colour, effect). The host pushes state names; the pad owns
 # the colours and the animation. Effects: "solid", "breathe", "pulse", "off".

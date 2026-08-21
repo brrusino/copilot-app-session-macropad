@@ -174,3 +174,23 @@ def test_focus_is_resent_on_connect(daemon, monkeypatch):
     daemon._push_focus(force=True)
 
     assert daemon.link.sent == [{"t": "focus", "v": False}]
+
+
+def test_brightness_levels_are_pushed_on_connect(daemon, monkeypatch):
+    """So they can be retuned in the config the pad is sitting next to,
+    rather than by reflashing it from another machine."""
+    monkeypatch.setattr(main_module.actions, "app_is_foreground", lambda: True)
+    daemon.cfg.brightness_levels = [0.35, 1.0, 1.6]
+
+    daemon._on_pad_connect()
+
+    assert {"t": "levels", "v": [0.35, 1.0, 1.6]} in daemon.link.sent
+
+
+def test_no_levels_configured_pushes_nothing(daemon, monkeypatch):
+    """An empty list would leave the pad with no level to step to."""
+    monkeypatch.setattr(main_module.actions, "app_is_foreground", lambda: True)
+
+    daemon._on_pad_connect()
+
+    assert not [m for m in daemon.link.sent if m.get("t") == "levels"]

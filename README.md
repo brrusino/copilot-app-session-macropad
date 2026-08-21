@@ -463,6 +463,7 @@ for why some setups have no transport available, and what to do about it.
 | key | keys sent |
 |---|---|
 | next attention | `Ctrl+<n>` for whichever session wants you |
+| next attention, held | *(nothing typed — steps the LED brightness)* |
 | rubber duck | `/rubber-duck` + `Enter` |
 | cycle mode | `Shift+Tab` |
 | compact | `/compact` + `Enter` |
@@ -479,6 +480,32 @@ through them adds nothing — measured 187 direct session presses against 16
 steps. This one acts on state instead: it goes to whichever session is asking,
 errored or unread, in that order, and repeated presses walk the list. That
 information is what the LEDs show and what nothing else on the pad can reach.
+
+**Hold that same key to change brightness.** The pad sits on a desk, and a desk
+is a different room at 9am than it is at 11pm — the level that reads well at
+night is invisible in daylight. Holding the key for 0.6s steps through
+`BRIGHTNESS_LEVELS`, wrapping at the top; the level changes while you're still
+holding it, so the pad answers before you let go.
+
+One scale for the whole pad rather than one per row. The palette already fixed
+the *ratio* between the status rows and the backlit ones, and that ratio is
+right in any light; what the room changes is how much light needs to leave the
+pad in total. Above 1.0 the bottom rows have almost no headroom left — their
+strongest channel is already at 255 — so the gain lifts their weaker channels
+and they brighten by washing toward white. That's the only headroom a
+near-maximum colour has, and in daylight being readable beats being purple.
+
+It shares a key because all sixteen already had a job, and this is the only one
+that could share. Every other key acts the moment it goes down, by typing a
+chord itself; this one's effect is decided by the host from an event the pad
+chooses whether to send, so a hold can be kept from firing it. The cost is that
+a tap dispatches on release instead of press, which adds the length of your own
+tap.
+
+A level chosen on the pad is kept until it reboots, and outlives a reconnect:
+the daemon pushes its configured brightness on every connect, and the pad
+reconnects on its own several times an hour, so without that a setting would
+silently revert minutes later.
 
 **The rubber-duck key types the app's own command.** An earlier version typed a
 single `/` to open the command palette, which saved exactly one character you

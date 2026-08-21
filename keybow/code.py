@@ -43,7 +43,8 @@ import config
 #:
 #: 1 - initial: state, palette, brightness, key events
 #: 2 - `type` (host asks the pad to type a chord) and `busy_done`
-FIRMWARE_VERSION = 2
+#: 3 - `levels` (host sets the brightness levels the pad cycles through)
+FIRMWARE_VERSION = 3
 SLOT_COUNT = len(config.SESSION_KEYS)
 
 keybow = PMK(Hardware())
@@ -277,6 +278,58 @@ def _drain_serial(handler):
 _palette = dict(config.PALETTE)
 _brightness = config.BRIGHTNESS
 
+
+def _clean_levels(values):
+    """Usable brightness levels from config or the host, lowest first."""
+    levels = []
+    try:
+        for value in values or ():
+            level = float(value)
+            if level > 0.0 and level not in levels:
+                levels.append(level)
+    except Exception:
+        return ()
+    levels.sort()
+    return tuple(levels)
+
+
+_levels = _clean_levels(getattr(config, "BRIGHTNESS_LEVELS", ()))
+
+#: True once a level was chosen on the pad, after which the host's configured
+#: brightness stops being applied.
+#:
+#: The pad reconnects on its own several times an hour -- a USB hiccup, a
+#: daemon restart -- and the host pushes its configured brightness on every
+#: connect. Without this, a level picked by hand would silently revert minutes
+#: later, which looks like the key not working rather than the setting being
+#: overwritten. A choice made at the pad is the more recent one, so it wins.
+_brightness_manual = False
+
+_BRIGHTNESS_KEY = getattr(config, "BRIGHTNESS_KEY", None)
+_BRIGHTNESS_HOLD = float(getattr(config, "BRIGHTNESS_HOLD_SECS", 0.6))
+
+#: When the brightness key went down, and whether the hold already fired.
+#:
+#: None rather than 0.0 for "not held": time.monotonic() starts from around
+#: zero at boot, so a real timestamp can be falsy.
+_brightness_down_at = None
+_brightness_fired = False
+
+
+def _cycle_brightness():
+    """Step to the next level up, wrapping round at the top."""
+    global _brightness, _brightness_manual
+
+    if not _levels:
+        return
+    for level in _levels:
+        if level > _brightness + 1e-6:
+            _brightness = level
+            break
+    else:
+        _brightness = _levels[0]
+    _brightness_manual = True
+
 # Semantic state per session slot.
 _slot_state = ["empty"] * SLOT_COUNT
 
@@ -400,10 +453,24 @@ def _handle_message(msg):
         return
 
     if kind == "brightness":
+        if _brightness_manual:
+            # A level chosen on the pad outlives a reconnect. See
+            # _brightness_manual.
+            return
         try:
-            _brightness = max(0.0, min(1.0, float(msg.get("v"))))
+            _brightness = max(0.0, float(msg.get("v")))
         except Exception:
             pass
+        return
+
+    if kind == "levels":
+        # Retuning the levels does not need a reflash, for the same reason the
+        # palette does not: the room they are wrong in is rarely the one with a
+        # Mac and a USB cable in it.
+        global _levels
+        levels = _clean_levels(msg.get("v"))
+        if levels:
+            _levels = levels
         return
 
 
@@ -423,6 +490,16 @@ def _effect_scale(effect, now):
         phase = (now % config.PULSE_PERIOD) / config.PULSE_PERIOD
         return 1.0 if phase < 0.5 else 0.12
     return 1.0
+
+
+def _channel(value, scale):
+    """One LED channel, scaled and held inside what the hardware can show."""
+    lit = int(value * scale)
+    if lit > 255:
+        return 255
+    if lit < 0:
+        return 0
+    return lit
 
 
 def _resolve(key_number, now, connected):
@@ -448,10 +525,14 @@ def _resolve(key_number, now, connected):
 
     colour, effect = _palette.get(name, ((0, 0, 0), "off"))
     scale = _effect_scale(effect, now) * _brightness
+    # Clamped per channel because the gain goes above 1.0. A colour already at
+    # 255 in one channel cannot get more saturated, so the extra gain lands on
+    # its weaker channels and the key washes toward white -- which is the only
+    # way the backlit rows have left to get brighter.
     return (
-        int(colour[0] * scale),
-        int(colour[1] * scale),
-        int(colour[2] * scale),
+        _channel(colour[0], scale),
+        _channel(colour[1], scale),
+        _channel(colour[2], scale),
     )
 
 
@@ -569,6 +650,14 @@ def _on_down(key_number, now):
         _act_on_app(key_number, _TYPING_KEYS[key_number], now)
     elif key_number in config.ACTION_KEYS:
         _action_flash[key_number] = now + _ACTION_FLASH_SECS
+        if key_number == _BRIGHTNESS_KEY and _levels:
+            # Nothing happens yet. A press cannot be told from a hold until it
+            # ends, and this key means different things either way -- so both
+            # the focus chord and the event the host acts on wait for _on_up.
+            global _brightness_down_at, _brightness_fired
+            _brightness_down_at = now
+            _brightness_fired = False
+            return
         # The action itself is the host's to decide; all the pad does here is
         # make sure the app is in front to receive whatever comes back.
         if not _app_focused and _FOCUS_CHORD and key_number in _FOCUS_KEYS:
@@ -598,12 +687,40 @@ def _on_down(key_number, now):
     _send(event)
 
 
+def _check_brightness_hold(now):
+    """Change level while the key is still down, not on release.
+
+    Waiting for the release would mean holding a key with no idea whether
+    anything was happening, and letting go to find out.
+    """
+    global _brightness_fired
+
+    if _brightness_down_at is None or _brightness_fired:
+        return
+    if (now - _brightness_down_at) >= _BRIGHTNESS_HOLD:
+        _cycle_brightness()
+        _brightness_fired = True
+
+
 def _on_up(key_number, now):
+    global _brightness_down_at
+
     if key_number in config.DICTATION_KEYS:
         _dictation_down.discard(key_number)
         # Release only once BOTH keys are up.
         if not _dictation_down:
             _release_chord()
+    elif key_number == _BRIGHTNESS_KEY and _brightness_down_at is not None:
+        _brightness_down_at = None
+        if not _brightness_fired:
+            # Short enough to be a tap, so it meant what it always meant. Both
+            # halves of a normal press happen here, in the order they would
+            # have on the way down.
+            if not _app_focused and _FOCUS_CHORD and key_number in _FOCUS_KEYS:
+                _type_all((_FOCUS_CHORD,))
+            press = {"t": "down", "k": key_number}
+            press.update(_describe(key_number))
+            _send(press)
 
     event = {"t": "up", "k": key_number}
     event.update(_describe(key_number))
@@ -644,6 +761,7 @@ def main():
             _discard_pending()
 
         _drain_type_queue(now)
+        _check_brightness_hold(now)
 
         if now - _last_heartbeat >= config.HEARTBEAT_INTERVAL:
             # Carry the firmware version on every heartbeat, not just the

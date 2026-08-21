@@ -79,6 +79,9 @@ class Config:
     slot_count: int = DEFAULT_SLOT_COUNT
     reconcile_interval: float = DEFAULT_RECONCILE_INTERVAL
     brightness: float | None = None
+    #: The levels the pad's brightness key cycles through, lowest first.
+    #: Pushed on connect so they can be retuned without reflashing the pad.
+    brightness_levels: list[float] = field(default_factory=list)
     palette: dict[str, list] = field(default_factory=dict)
     log_level: str = "INFO"
 
@@ -155,6 +158,9 @@ def load(path: Path | None = None) -> Config:
     leds = data.get("leds", {})
     if "brightness" in leds:
         cfg.brightness = float(leds["brightness"])
+    levels = leds.get("levels")
+    if isinstance(levels, (list, tuple)):
+        cfg.brightness_levels = sorted({float(level) for level in levels if float(level) > 0})
     palette = leds.get("palette", {})
     if isinstance(palette, dict):
         cfg.palette = palette

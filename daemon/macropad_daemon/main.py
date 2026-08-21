@@ -50,7 +50,7 @@ NAVIGATION_TIMEOUT = 3.0
 #: Pad protocol version this daemon needs. Bumped alongside
 #: ``FIRMWARE_VERSION`` in keybow/code.py whenever the daemon starts relying on
 #: a message an older pad would silently ignore.
-REQUIRED_FIRMWARE = 2
+REQUIRED_FIRMWARE = 3
 
 
 class Daemon:
@@ -124,6 +124,8 @@ class Daemon:
         self.link.send({"t": "palette", "v": palette})
         if self.cfg.brightness is not None:
             self.link.send({"t": "brightness", "v": self.cfg.brightness})
+        if self.cfg.brightness_levels:
+            self.link.send({"t": "levels", "v": self.cfg.brightness_levels})
         # Resend on connect: a pad that just came up assumes the app is focused,
         # which is wrong as often as it is right.
         self._push_focus(force=True)
@@ -144,11 +146,16 @@ class Daemon:
         self._pad_firmware = version
         if version < REQUIRED_FIRMWARE:
             log.warning(
-                "pad firmware is v%s but this daemon needs v%s: the row 3 "
-                "actions cannot work until you reflash keybow/ onto the pad",
+                "pad firmware is v%s but this daemon needs v%s: reflash keybow/ "
+                "onto the pad, or the newest keys will silently do nothing",
                 version,
                 REQUIRED_FIRMWARE,
             )
+        else:
+            # Says so out loud because "did that flash actually land?" is
+            # otherwise unanswerable from this side: an old pad and a new one
+            # behave identically right up until you press the key that changed.
+            log.info("pad firmware v%s", version)
 
     def _on_pad_event(self, message: dict) -> None:
         kind = message.get("t")
