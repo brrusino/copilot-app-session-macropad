@@ -152,7 +152,12 @@ FREE_KEYS = ()
 SEND_SESSION_SHORTCUTS = True
 
 # Global brightness scale applied to every colour, 0.0-1.0.
-BRIGHTNESS = 0.6
+#
+# Left at full: the palette below carries the actual levels, tuned by eye
+# against real keycaps. Scaling here as well would mean two knobs for one
+# effect, and a pad running without a daemon would render dimmer than the same
+# palette does with one.
+BRIGHTNESS = 1.0
 
 # Semantic state -> (colour, effect). The host pushes state names; the pad owns
 # the colours and the animation. Effects: "solid", "breathe", "pulse", "off".
@@ -161,15 +166,28 @@ BRIGHTNESS = 0.6
 # {"t":"palette"} message from the host, so tuning does not require a reflash.
 PALETTE = {
     "empty":          ((0, 0, 0),       "off"),
-    "idle":           ((110, 110, 110), "solid"),
-    "working":        ((0, 80, 255),    "breathe"),
-    "unread":         ((0, 230, 60),    "solid"),
-    "needs_approval": ((255, 110, 0),   "pulse"),
+    # The session states are deliberately dim.
+    #
+    # Not for their own sake -- they are the states you glance at -- but
+    # because the bottom two rows are backlit legends, and eyes adapt to the
+    # brightest thing on the pad. A bright status row raises that adaptation
+    # level until the lit glyphs below fall under it and stop being readable.
+    # This is a contrast problem, not a brightness one, so the fix is here
+    # rather than on the keys that were hard to see.
+    #
+    # Tuned by eye against real printed keycaps, at roughly a quarter of where
+    # they started. Hue still separates the states; blue is the first to
+    # disappear if these go lower, since it is the weakest channel on these
+    # LEDs.
+    "idle":           ((28, 28, 28),    "solid"),
+    "working":        ((0, 21, 66),     "breathe"),
+    "unread":         ((0, 59, 16),     "solid"),
+    "needs_approval": ((66, 28, 0),     "pulse"),
     # Stopped part-way and waiting for a nudge. Blinking rather than solid so
     # it cannot be confused with a plain error, and red rather than amber so it
     # cannot be confused with a session asking you a question.
-    "interrupted":    ((255, 20, 20),   "pulse"),
-    "error":          ((255, 20, 20),   "solid"),
+    "interrupted":    ((66, 6, 6),      "pulse"),
+    "error":          ((66, 6, 6),      "solid"),
     # Shown on every session key when the host daemon is not connected.
     # Deliberately a different HUE to idle, not just dimmer: "the daemon is
     # down" and "this session is idle" are completely different situations and
