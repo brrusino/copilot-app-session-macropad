@@ -118,10 +118,10 @@ This can span up to three machines, so it's worth being explicit:
 If the first two are the same machine, ignore this section — the default
 `transport = "serial"` just works.
 
-### Quickstart: pad on your local machine, RDP into the devbox
+### Quickstart: pad on Windows, RDP into the devbox
 
-The common setup, and the one to try first. The pad stays plugged into the
-machine in front of you; RDP carries its COM port into the session.
+The pad stays plugged into the Windows machine in front of you; RDP carries its
+COM port into the session.
 
 **In your RDP client**, before connecting:
 
@@ -150,6 +150,55 @@ If `--ports` doesn't find the pad, it prints what to check. Fall back to
 [the network bridge](#using-the-network-bridge) — or just accept losing the
 LEDs, since the pad types its own shortcuts and keeps working without a daemon.
 
+### Quickstart: pad on a Mac, Windows App into the devbox
+
+Windows App forwards keyboard input from macOS, which is why every button
+command already works, but it does not expose serial/COM redirection on macOS.
+Microsoft's current
+[Windows App platform comparison](https://learn.microsoft.com/en-us/windows-app/compare-platforms-features#redirection)
+lists keyboard input on both Windows and macOS, while serial/COM redirection is
+not one of the macOS device types.
+
+Keep both remote transports alive:
+
+```toml
+[pad]
+transport = "both"
+bridge_mode = "listen"
+bridge_host = "0.0.0.0"
+bridge_port = 7831
+```
+
+`both` means redirected serial still works when you connect from Windows, and
+the same daemon also accepts the bridge when you connect from a Mac. It
+broadcasts LED state to every connected transport and accepts key events from
+either one, so switching client machines needs no config edit or daemon restart.
+
+On the remote machine, start the daemon once in that mode. It creates
+`~/.copilot/macropad.token`; copy that file to the Mac without putting the token
+on a command line.
+
+On the Mac:
+
+```bash
+python3 -m venv .pad-bridge-venv
+.pad-bridge-venv/bin/python -m pip install pyserial
+
+# Prove the network path and token before involving the pad.
+.pad-bridge-venv/bin/python scripts/pad_bridge.py \
+  --host <remote-host-or-IP> \
+  --token-file ~/.copilot/macropad.token \
+  --test-connection
+
+# Keep this running while the Windows App session is in use.
+.pad-bridge-venv/bin/python scripts/pad_bridge.py \
+  --host <remote-host-or-IP> \
+  --token-file ~/.copilot/macropad.token
+```
+
+The bridge is bidirectional: key events still travel toward the daemon, and
+palette, brightness, solid, pulse, and breathe messages travel back to the pad.
+
 ### Getting the daemon and the pad connected
 
 **Session switching and dictation work regardless, and need nothing installed.**
@@ -161,8 +210,7 @@ either.
 **What the daemon adds is the LEDs** — live session state — and for that it
 needs a two-way channel to the pad. In order of preference:
 
-**Option 1: RDP COM port redirection.** ⭐ *Start here if you RDP into the
-machine running the Copilot app.*
+**Option 1: RDP COM port redirection.** Start here on a Windows RDP client.
 
 CircuitPython's USB serial port enumerates under Windows' "Ports (COM & LPT)"
 class exactly like a physical serial port, and RDP redirects that class
@@ -188,8 +236,8 @@ Then confirm it arrived:
 python -m macropad_daemon --ports
 ```
 
-Keep the default `transport = "serial"` — a redirected port is just a COM port,
-so nothing else changes.
+Keep `transport = "serial"` if Windows is the only client. Use `transport =
+"both"` when the same remote machine is also reached from a Mac.
 
 **Option 2: run a bridge on the pad's machine.** A small relay forwards the pad
 to the daemon over TCP. `scripts/pad-bridge.ps1` needs only Windows PowerShell
@@ -379,8 +427,9 @@ cd daemon
 ## Using the network bridge
 
 Use this when the pad is plugged into a different machine from the daemon and
-that machine can run something. Typical case: you work on a Windows PC with the
-pad attached, and RDP into a devbox where the Copilot app runs.
+serial redirection is unavailable. That is the normal macOS case: Windows App
+forwards the Keybow as a keyboard but not as a serial device, so input works
+without a bridge and LEDs need one.
 
 ### Which side dials?
 
@@ -403,7 +452,7 @@ On the **daemon machine** (`~/.copilot/macropad.toml`):
 
 ```toml
 [pad]
-transport   = "network"
+transport   = "both" # or "network" if redirected serial is never used
 bridge_mode = "connect"
 bridge_host = "<your-PC-hostname-or-IP>"
 bridge_port = 7831
@@ -411,7 +460,7 @@ bridge_port = 7831
 
 Run the daemon once to generate `~/.copilot/macropad.token`, and copy that value.
 
-On the **PC with the pad**:
+On **Windows with the pad**:
 
 ```powershell
 .\pad-bridge.ps1 -Listen -Token <token>
@@ -423,6 +472,15 @@ the link drops, so you can start them in either order.
 `pad-bridge.ps1` needs **nothing installed** — Windows PowerShell ships with
 Windows and the script uses only built-in .NET types. If you prefer Python,
 `pad_bridge.py` does the same job with `pyserial`.
+
+On **macOS with the pad**:
+
+```bash
+python3 scripts/pad_bridge.py --listen --token-file ~/.copilot/macropad.token
+```
+
+The Python bridge supports both connection directions, so the same daemon
+configuration works from Windows and macOS.
 
 ### If the daemon's machine does accept inbound
 
@@ -437,6 +495,16 @@ bridge_port = 7831
 ```powershell
 .\pad-bridge.ps1 -DaemonHost <devbox> -Token <token> -TestConnection   # verify first
 .\pad-bridge.ps1 -DaemonHost <devbox> -Token <token>
+```
+
+```bash
+python3 scripts/pad_bridge.py \
+  --host <devbox> \
+  --token-file ~/.copilot/macropad.token \
+  --test-connection
+python3 scripts/pad_bridge.py \
+  --host <devbox> \
+  --token-file ~/.copilot/macropad.token
 ```
 
 `-TestConnection` checks reachability and the token before any hardware is

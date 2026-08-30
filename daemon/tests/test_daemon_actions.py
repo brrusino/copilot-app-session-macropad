@@ -61,6 +61,22 @@ def session(slot: int, **kwargs) -> PinnedSession:
     )
 
 
+def test_both_transport_builds_serial_and_network_links(tmp_path):
+    from macropad_daemon.multi_link import MultiLink
+    from macropad_daemon.network_link import NetworkLink
+    from macropad_daemon.serial_link import SerialLink
+
+    cfg = config_module.Config(pad_transport="both", copilot_home=tmp_path)
+    uninitialized = object.__new__(main_module.Daemon)
+
+    link = uninitialized._build_link(cfg)
+
+    assert isinstance(link, MultiLink)
+    assert any(isinstance(child, SerialLink) for child in link._links)
+    assert any(isinstance(child, NetworkLink) for child in link._links)
+    assert (tmp_path / "macropad.token").is_file()
+
+
 def test_next_attention_goes_to_the_session_that_wants_you(daemon):
     """The one action a session key cannot replace: rows 1 and 2 already give
     random access to every pin, so this has to act on state instead."""

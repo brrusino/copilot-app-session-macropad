@@ -61,8 +61,8 @@ DEFAULT_RECONCILE_INTERVAL = 1.0
 @dataclass
 class Config:
     copilot_home: Path = field(default_factory=lambda: Path.home() / ".copilot")
-    #: "serial" for a pad on this machine, "network" for one relayed by
-    #: scripts/pad_bridge.py from the machine it is plugged into.
+    #: "serial" for a visible serial port, "network" for a relayed pad, or
+    #: "both" when this remote host is used from Windows and macOS clients.
     pad_transport: str = "serial"
     serial_port: str | None = None
     serial_baud: int = 115200
@@ -135,9 +135,9 @@ def load(path: Path | None = None) -> Config:
 
     pad = data.get("pad", {})
     transport = str(pad.get("transport", cfg.pad_transport)).lower()
-    if transport not in ("serial", "network"):
+    if transport not in ("serial", "network", "both"):
         raise ValueError(
-            f"[pad] transport must be 'serial' or 'network', got {transport!r}"
+            f"[pad] transport must be 'serial', 'network', or 'both', got {transport!r}"
         )
     cfg.pad_transport = transport
     cfg.bridge_host = pad.get("bridge_host", cfg.bridge_host)

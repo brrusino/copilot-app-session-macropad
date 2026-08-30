@@ -40,6 +40,11 @@ def test_connect_mode_round_trips(tmp_path):
     assert cfg.bridge_token == "secret"
 
 
+def test_both_transport_round_trips(tmp_path):
+    path = write(tmp_path, '[pad]\ntransport = "both"\n')
+    assert config_module.load(path).pad_transport == "both"
+
+
 def test_rejects_unknown_transport(tmp_path):
     path = write(tmp_path, '[pad]\ntransport = "carrier-pigeon"\n')
     with pytest.raises(ValueError, match="transport"):

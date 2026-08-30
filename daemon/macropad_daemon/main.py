@@ -80,11 +80,12 @@ class Daemon:
 
         ``serial``  - pad's serial port is visible to this machine.
         ``network`` - a bridge relays the pad from another machine.
+        ``both``    - accept either, so changing RDP clients needs no reconfig.
 
         Imported lazily so the hardware-free modes (--status, --print-hooks,
         --install-hooks) work without pyserial installed.
         """
-        if cfg.pad_transport == "network":
+        def network_link():
             from .network_link import NetworkLink, load_or_create_token
 
             token = cfg.bridge_token or load_or_create_token(cfg.copilot_home)
@@ -98,11 +99,20 @@ class Daemon:
 
         from .serial_link import SerialLink
 
-        return SerialLink(
-            on_event=self._on_pad_event,
-            port=cfg.serial_port,
-            baud=cfg.serial_baud,
-        )
+        def serial_link():
+            return SerialLink(
+                on_event=self._on_pad_event,
+                port=cfg.serial_port,
+                baud=cfg.serial_baud,
+            )
+
+        if cfg.pad_transport == "network":
+            return network_link()
+        if cfg.pad_transport == "both":
+            from .multi_link import MultiLink
+
+            return MultiLink((serial_link(), network_link()))
+        return serial_link()
 
     # -- inputs ----------------------------------------------------------
 
