@@ -74,6 +74,9 @@ class Config:
     #: connections (a Cloud PC or VM behind a gateway, or a firewall you are not
     #: an admin on).
     bridge_mode: str = "listen"
+    #: Optional folder redirected from a macOS Windows App client. Additive to
+    #: the primary transport, so serial keeps working from Windows.
+    folder_path: Path | None = None
     hook_host: str = "127.0.0.1"
     hook_port: int = DEFAULT_HOOK_PORT
     slot_count: int = DEFAULT_SLOT_COUNT
@@ -150,6 +153,10 @@ def load(path: Path | None = None) -> Config:
             f"[pad] bridge_mode must be 'listen' or 'connect', got {bridge_mode!r}"
         )
     cfg.bridge_mode = bridge_mode
+
+    folder = data.get("folder", {})
+    if folder.get("path"):
+        cfg.folder_path = Path(folder["path"]).expanduser()
 
     hooks = data.get("hooks", {})
     cfg.hook_host = hooks.get("host", cfg.hook_host)

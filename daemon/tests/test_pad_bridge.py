@@ -62,6 +62,29 @@ def test_probe_never_writes_a_frame_the_console_could_echo(monkeypatch):
     assert handle.writes == []
 
 
+def test_folder_frame_is_published_atomically(tmp_path):
+    outbox = tmp_path / "to-daemon"
+    outbox.mkdir()
+
+    pad_bridge.write_folder_frame(outbox, b'{"t":"hb"}', 1)
+
+    files = list(outbox.iterdir())
+    assert len(files) == 1
+    assert files[0].suffix == ".json"
+    assert files[0].read_bytes() == b'{"t":"hb"}'
+
+
+def test_clear_folder_frames_leaves_non_protocol_files_alone(tmp_path):
+    (tmp_path / "old.json").write_text("{}")
+    keep = tmp_path / "README.txt"
+    keep.write_text("keep")
+
+    pad_bridge.clear_folder_frames(tmp_path)
+
+    assert not (tmp_path / "old.json").exists()
+    assert keep.exists()
+
+
 def test_connect_daemon_sends_the_token_first():
     port = free_port()
     listener = socket.socket()

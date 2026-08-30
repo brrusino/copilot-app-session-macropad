@@ -147,8 +147,9 @@ the pad is plugged in, and RDP forwards the chord into the session, so it lands
 right either way.
 
 If `--ports` doesn't find the pad, it prints what to check. Fall back to
-[the network bridge](#using-the-network-bridge) — or just accept losing the
-LEDs, since the pad types its own shortcuts and keeps working without a daemon.
+[the direct network bridge](#using-the-direct-network-bridge) — or just accept
+losing the LEDs, since the pad types its own shortcuts and keeps working
+without a daemon.
 
 ### Quickstart: pad on a Mac, Windows App into the devbox
 
@@ -159,45 +160,43 @@ Microsoft's current
 lists keyboard input on both Windows and macOS, while serial/COM redirection is
 not one of the macOS device types.
 
-Keep both remote transports alive:
+Create `~/.copilot/macropad-rdp` on the Mac and redirect that folder in Windows
+App. Microsoft documents the current steps under
+[Folder redirection](https://learn.microsoft.com/en-us/windows-app/device-audio-folder-redirection-teams?tabs=macos#folder-redirection):
+edit the device, enable custom settings, open **Folders**, enable **Redirect
+folders**, and add this folder. Reconnect the remote session after saving.
+
+The redirected folder appears as a network drive in the remote session. Point
+the daemon at that remote path while keeping serial as its primary transport:
 
 ```toml
 [pad]
-transport = "both"
-bridge_mode = "listen"
-bridge_host = "0.0.0.0"
-bridge_port = 7831
+transport = "serial"
+
+[folder]
+path = "//tsclient/CopilotMacropad"
 ```
 
-`both` means redirected serial still works when you connect from Windows, and
-the same daemon also accepts the bridge when you connect from a Mac. It
-broadcasts LED state to every connected transport and accepts key events from
-either one, so switching client machines needs no config edit or daemon restart.
-
-On the remote machine, start the daemon once in that mode. It creates
-`~/.copilot/macropad.token`; copy that file to the Mac without putting the token
-on a command line.
+The folder transport is additive: redirected serial still works when you
+connect from Windows, and the same daemon also watches the folder when you
+connect from a Mac. Switching client machines needs no config edit or daemon
+restart.
 
 On the Mac:
 
 ```bash
+mkdir -p ~/.copilot/macropad-rdp
 python3 -m venv .pad-bridge-venv
 .pad-bridge-venv/bin/python -m pip install pyserial
-
-# Prove the network path and token before involving the pad.
-.pad-bridge-venv/bin/python scripts/pad_bridge.py \
-  --host <remote-host-or-IP> \
-  --token-file ~/.copilot/macropad.token \
-  --test-connection
-
-# Keep this running while the Windows App session is in use.
-.pad-bridge-venv/bin/python scripts/pad_bridge.py \
-  --host <remote-host-or-IP> \
-  --token-file ~/.copilot/macropad.token
+.pad-bridge-venv/bin/python ~/.copilot/pad_bridge.py \
+  --folder ~/.copilot/macropad-rdp
 ```
 
-The bridge is bidirectional: key events still travel toward the daemon, and
-palette, brightness, solid, pulse, and breathe messages travel back to the pad.
+The two directories inside it are a mailbox: `to-pad` carries state, palette,
+brightness, and heartbeats from the remote daemon; `to-daemon` carries Keybow
+events back. Windows App moves those files through the existing RDP connection.
+The firmware renders solid, pulse, and breathe effects locally, so the folder
+does not stream animation frames and its latency is not on the animation path.
 
 ### Getting the daemon and the pad connected
 
@@ -240,10 +239,10 @@ Keep `transport = "serial"` if Windows is the only client. Use `transport =
 "both"` when the same remote machine is also reached from a Mac.
 
 **Option 2: run a bridge on the pad's machine.** A small relay forwards the pad
-to the daemon over TCP. `scripts/pad-bridge.ps1` needs only Windows PowerShell
-(which ships with Windows); `scripts/pad_bridge.py` needs Python and `pyserial`.
-Use this when the pad's machine can run something. See
-[Using the network bridge](#using-the-network-bridge).
+to the daemon. On macOS, use the
+[redirected-folder bridge](#using-the-redirected-folder-bridge) because it
+travels through Windows App itself. A direct TCP bridge is also available when
+the two machines have a real route to each other.
 
 **If neither is available**, you still get session switching, actions and
 dictation — the pad types those itself. You just lose the LEDs, because a
@@ -424,12 +423,30 @@ cd daemon
 .\.venv\Scripts\python.exe -m macropad_daemon
 ```
 
-## Using the network bridge
+## Using the redirected-folder bridge
+
+This is the normal macOS path. It needs no direct network route between the Mac
+and the remote machine; Windows App carries the folder operations through the
+same gateway as the desktop session.
+
+The daemon side uses `[folder] path` in `~/.copilot/macropad.toml`. This is
+additive to `[pad] transport`, so leave `transport = "serial"` in place for
+Windows clients. The Mac side runs:
+
+```bash
+python3 ~/.copilot/pad_bridge.py --folder ~/.copilot/macropad-rdp
+```
+
+The bridge writes complete JSON frames with an atomic rename, and each side
+deletes a frame only after consuming it. Both queues are cleared on startup so
+an old key press or stale state can never replay after reconnecting.
+
+## Using the direct network bridge
 
 Use this when the pad is plugged into a different machine from the daemon and
-serial redirection is unavailable. That is the normal macOS case: Windows App
-forwards the Keybow as a keyboard but not as a serial device, so input works
-without a bridge and LEDs need one.
+serial redirection is unavailable **and the two machines can reach each other
+directly**. A Windows App gateway connection by itself is not such a route; use
+the redirected-folder bridge above for that case.
 
 ### Which side dials?
 

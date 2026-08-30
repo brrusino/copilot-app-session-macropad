@@ -29,10 +29,12 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import secrets
 import socket
 import sys
 import time
+from pathlib import Path
 
 try:
     import serial
@@ -49,6 +51,8 @@ PROBE_TIMEOUT = 3.5
 DEFAULT_PORT = 7831
 AUTH_TIMEOUT = 5.0
 CONNECTION_TEST_TIMEOUT = 2.0
+FOLDER_POLL_INTERVAL = 0.02
+FOLDER_HEARTBEAT_INTERVAL = 2.0
 
 
 def candidate_ports() -> list[str]:
@@ -216,6 +220,88 @@ def test_daemon_connection(host: str, port: int, token: str) -> str:
             return "rejected"
 
 
+def write_folder_frame(directory: Path, payload: bytes, sequence: int) -> None:
+    """Publish one complete frame without exposing a partial file."""
+    name = f"{time.time_ns():020d}-{os.getpid()}-{sequence:08d}"
+    temporary = directory / f".{name}.tmp"
+    complete = directory / f"{name}.json"
+    temporary.write_bytes(payload)
+    os.replace(temporary, complete)
+
+
+def clear_folder_frames(directory: Path) -> None:
+    for path in directory.glob("*.json"):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def relay_folder(pad: serial.Serial, root: Path) -> None:
+    """Pump frames through a folder redirected into the remote RDP session."""
+    to_pad = root / "to-pad"
+    to_daemon = root / "to-daemon"
+    alive = root / "bridge.alive"
+    root.mkdir(parents=True, exist_ok=True)
+    to_pad.mkdir(exist_ok=True)
+    to_daemon.mkdir(exist_ok=True)
+
+    # Neither old key presses nor old LED state should replay after reconnect.
+    # The alive marker below makes the daemon push a fresh complete state.
+    clear_folder_frames(to_daemon)
+    clear_folder_frames(to_pad)
+
+    pad_buffer = b""
+    sequence = 0
+    last_alive = 0.0
+
+    while True:
+        now = time.monotonic()
+        if now - last_alive >= FOLDER_HEARTBEAT_INTERVAL:
+            alive.touch()
+            last_alive = now
+
+        # Pad -> daemon
+        try:
+            waiting = pad.in_waiting
+            if waiting:
+                pad_buffer += pad.read(waiting)
+                while b"\n" in pad_buffer:
+                    raw, _, pad_buffer = pad_buffer.partition(b"\n")
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        message = json.loads(raw.decode("utf-8"))
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                    if not isinstance(message, dict):
+                        continue
+                    sequence += 1
+                    write_folder_frame(to_daemon, raw, sequence)
+        except (serial.SerialException, OSError):
+            log.warning("pad went away")
+            return
+
+        # Daemon -> pad
+        try:
+            for path in sorted(to_pad.glob("*.json")):
+                try:
+                    payload = path.read_bytes().strip()
+                    if payload:
+                        pad.write(payload + b"\n")
+                finally:
+                    try:
+                        path.unlink()
+                    except FileNotFoundError:
+                        pass
+        except (serial.SerialException, OSError):
+            log.warning("redirected folder or pad went away")
+            return
+
+        time.sleep(FOLDER_POLL_INTERVAL)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", help="daemon host (the machine running Copilot)")
@@ -239,6 +325,10 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="verify daemon reachability and authentication, then exit",
     )
+    parser.add_argument(
+        "--folder",
+        help="relay through a Windows App redirected folder instead of TCP",
+    )
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -248,16 +338,20 @@ def main(argv: list[str] | None = None) -> int:
         datefmt="%H:%M:%S",
     )
 
-    token = args.token
-    if not token and args.token_file:
-        with open(args.token_file, encoding="utf-8") as handle:
-            token = handle.read().strip()
-    if not token:
-        parser.error("one of --token or --token-file is required")
+    token = None
+    if not args.folder:
+        token = args.token
+        if not token and args.token_file:
+            with open(args.token_file, encoding="utf-8") as handle:
+                token = handle.read().strip()
+        if not token:
+            parser.error("one of --token or --token-file is required")
 
+    if args.folder and (args.host or args.listen or args.test_connection):
+        parser.error("--folder cannot be combined with network bridge options")
     if args.listen and args.test_connection:
         parser.error("--test-connection cannot be used with --listen")
-    if not args.listen and not args.host:
+    if not args.folder and not args.listen and not args.host:
         parser.error("--host is required unless --listen is used")
 
     if args.test_connection:
@@ -272,7 +366,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     listener = None
-    if args.listen:
+    folder = Path(args.folder).expanduser() if args.folder else None
+    if folder is not None:
+        log.info("bridging pad through redirected folder %s", folder)
+    elif args.listen:
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind((args.listen_host, args.port))
@@ -302,14 +399,17 @@ def main(argv: list[str] | None = None) -> int:
 
             log.info("pad on %s", port)
             try:
-                if listener is not None:
-                    sock, initial_data = accept_daemon(listener, token)
+                if folder is not None:
+                    relay_folder(pad, folder)
                 else:
-                    sock = connect_daemon(args.host, args.port, token)
-                    initial_data = b""
-                    log.info("connected to daemon")
-                with sock:
-                    relay(pad, sock, initial_data)
+                    if listener is not None:
+                        sock, initial_data = accept_daemon(listener, token)
+                    else:
+                        sock = connect_daemon(args.host, args.port, token)
+                        initial_data = b""
+                        log.info("connected to daemon")
+                    with sock:
+                        relay(pad, sock, initial_data)
             except OSError as exc:
                 log.warning("daemon link unavailable: %s", exc)
             finally:

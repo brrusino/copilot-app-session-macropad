@@ -45,6 +45,21 @@ def test_both_transport_round_trips(tmp_path):
     assert config_module.load(path).pad_transport == "both"
 
 
+def test_redirected_folder_is_additive(tmp_path):
+    path = write(
+        tmp_path,
+        """
+        [pad]
+        transport = "serial"
+        [folder]
+        path = "X:/CopilotMacropad"
+        """,
+    )
+    cfg = config_module.load(path)
+    assert cfg.pad_transport == "serial"
+    assert cfg.folder_path == config_module.Path("X:/CopilotMacropad")
+
+
 def test_rejects_unknown_transport(tmp_path):
     path = write(tmp_path, '[pad]\ntransport = "carrier-pigeon"\n')
     with pytest.raises(ValueError, match="transport"):

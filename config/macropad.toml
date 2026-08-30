@@ -17,10 +17,7 @@
 #               bidirectional, so the LEDs work.
 #   "network" - the pad is on another machine running scripts/pad_bridge.py or
 #               scripts/pad-bridge.ps1.
-#   "both"    - run serial and network together. Use this on a remote machine
-#               reached from both Windows and macOS: Windows can redirect the
-#               serial port, while Windows App on macOS redirects keyboard
-#               input but not serial/COM devices.
+#   "both"    - run serial and network together.
 transport = "serial"
 
 # Only used when transport = "network".
@@ -46,6 +43,13 @@ bridge_port = 7831
 # Shared secret. Whichever side dials out presents it first. Generated into
 # ~/.copilot/macropad.token on first run if left unset.
 # bridge_token = "..."
+
+[folder]
+# Optional and additive to `transport`. Use this when a macOS folder is
+# redirected into the remote session by Windows App. Windows keeps using serial;
+# the Mac bridge exchanges the same JSON protocol through this folder.
+#
+# path = "//tsclient/CopilotMacropad"
 
 [serial]
 # Only used when transport = "serial". Leave the port unset to auto-detect:

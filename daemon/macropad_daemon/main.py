@@ -106,13 +106,24 @@ class Daemon:
                 baud=cfg.serial_baud,
             )
 
-        if cfg.pad_transport == "network":
-            return network_link()
-        if cfg.pad_transport == "both":
-            from .multi_link import MultiLink
+        links = []
+        if cfg.pad_transport in ("serial", "both"):
+            links.append(serial_link())
+        if cfg.pad_transport in ("network", "both"):
+            links.append(network_link())
+        if cfg.folder_path is not None:
+            from .folder_link import FolderLink
 
-            return MultiLink((serial_link(), network_link()))
-        return serial_link()
+            links.append(FolderLink(self._on_pad_event, cfg.folder_path))
+
+        if len(links) == 1:
+            return links[0]
+        if not links:
+            raise ValueError("no pad transport configured")
+
+        from .multi_link import MultiLink
+
+        return MultiLink(links)
 
     # -- inputs ----------------------------------------------------------
 
