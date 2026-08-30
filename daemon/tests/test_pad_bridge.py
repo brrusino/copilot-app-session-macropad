@@ -85,6 +85,39 @@ def test_clear_folder_frames_leaves_non_protocol_files_alone(tmp_path):
     assert keep.exists()
 
 
+def test_changed_folder_mailbox_is_forwarded_once(tmp_path):
+    mailboxes = tmp_path / "mailboxes"
+    mailboxes.mkdir()
+    envelope = {
+        "r": "run-one",
+        "q": 4,
+        "m": {"t": "states", "v": ["working"]},
+    }
+    (mailboxes / "states.mailbox").write_text(json.dumps(envelope))
+    pad = FakeSerial()
+    seen = {}
+
+    pad_bridge.relay_folder_mailboxes(mailboxes, seen, pad)
+    pad_bridge.relay_folder_mailboxes(mailboxes, seen, pad)
+
+    assert pad.writes == [b'{"t":"states","v":["working"]}\n']
+
+
+def test_new_daemon_run_with_reset_sequence_is_not_ignored(tmp_path):
+    mailboxes = tmp_path / "mailboxes"
+    mailboxes.mkdir()
+    path = mailboxes / "states.mailbox"
+    path.write_text(json.dumps({"r": "old", "q": 50, "m": {"t": "hb"}}))
+    pad = FakeSerial()
+    seen = {}
+    pad_bridge.relay_folder_mailboxes(mailboxes, seen, pad)
+
+    path.write_text(json.dumps({"r": "new", "q": 1, "m": {"t": "hb"}}))
+    pad_bridge.relay_folder_mailboxes(mailboxes, seen, pad)
+
+    assert pad.writes == [b'{"t":"hb"}\n', b'{"t":"hb"}\n']
+
+
 def test_connect_daemon_sends_the_token_first():
     port = free_port()
     listener = socket.socket()

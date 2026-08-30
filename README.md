@@ -160,7 +160,7 @@ Microsoft's current
 lists keyboard input on both Windows and macOS, while serial/COM redirection is
 not one of the macOS device types.
 
-Create `~/.copilot/macropad-rdp` on the Mac and redirect that folder in Windows
+Create `~/CopilotMacropad` on the Mac and redirect that folder in Windows
 App. Microsoft documents the current steps under
 [Folder redirection](https://learn.microsoft.com/en-us/windows-app/device-audio-folder-redirection-teams?tabs=macos#folder-redirection):
 edit the device, enable custom settings, open **Folders**, enable **Redirect
@@ -185,12 +185,26 @@ restart.
 On the Mac:
 
 ```bash
-mkdir -p ~/.copilot/macropad-rdp
+mkdir -p ~/CopilotMacropad
 python3 -m venv .pad-bridge-venv
 .pad-bridge-venv/bin/python -m pip install pyserial
 .pad-bridge-venv/bin/python ~/.copilot/pad_bridge.py \
-  --folder ~/.copilot/macropad-rdp
+  --folder ~/CopilotMacropad
 ```
+
+After proving it interactively, install it as a per-user LaunchAgent so it
+starts at login and reconnects whenever the pad appears:
+
+```bash
+curl -fsSL \
+  https://raw.githubusercontent.com/brrusino/copilot-app-session-macropad/brrusino-keybow-2040-macropad/scripts/install-pad-bridge-macos.sh \
+  -o ~/.copilot/install-pad-bridge-macos.sh
+chmod 700 ~/.copilot/install-pad-bridge-macos.sh
+~/.copilot/install-pad-bridge-macos.sh
+```
+
+Its log is `~/.copilot/pad-bridge.log`. Remove it with
+`~/.copilot/install-pad-bridge-macos.sh --uninstall`.
 
 The two directories inside it are a mailbox: `to-pad` carries state, palette,
 brightness, and heartbeats from the remote daemon; `to-daemon` carries Keybow
@@ -434,7 +448,7 @@ additive to `[pad] transport`, so leave `transport = "serial"` in place for
 Windows clients. The Mac side runs:
 
 ```bash
-python3 ~/.copilot/pad_bridge.py --folder ~/.copilot/macropad-rdp
+python3 ~/.copilot/pad_bridge.py --folder ~/CopilotMacropad
 ```
 
 The bridge writes complete JSON frames with an atomic rename, and each side

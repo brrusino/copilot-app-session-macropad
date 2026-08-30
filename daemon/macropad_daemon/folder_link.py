@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import secrets
 import threading
 import time
 from collections.abc import Callable
@@ -39,6 +40,11 @@ POLL_INTERVAL = 0.1
 # Use the same contract for deciding whether the Mac bridge is present.
 BRIDGE_ALIVE_TIMEOUT = 6.0
 
+# The firmware's receive buffer is 4096 bytes. Fixed-size mailbox files use the
+# same protocol boundary and are padded with JSON-safe whitespace.
+MAILBOX_SIZE = 4096
+MAILBOX_TYPES = frozenset(("states", "hb", "focus", "palette", "brightness", "levels"))
+
 
 class FolderLink:
     """Carries the pad protocol through a redirected directory."""
@@ -48,6 +54,7 @@ class FolderLink:
         self.root = Path(root)
         self._to_pad = self.root / "to-pad"
         self._to_daemon = self.root / "to-daemon"
+        self._mailboxes = self.root / "mailboxes"
         self._alive = self.root / "bridge.alive"
         self._connected = False
         self._prepared = False
@@ -58,6 +65,7 @@ class FolderLink:
         self._on_connect: Callable[[], None] | None = None
         self._write_lock = threading.Lock()
         self._sequence = 0
+        self._run_id = secrets.token_hex(8)
 
     @property
     def connected(self) -> bool:
@@ -85,8 +93,11 @@ class FolderLink:
         if not self._connected:
             return False
         try:
-            payload = json.dumps(message, separators=(",", ":")).encode("utf-8")
-            self._write_frame(self._to_pad, payload)
+            if message.get("t") in MAILBOX_TYPES:
+                self._write_mailbox(message)
+            else:
+                payload = json.dumps(message, separators=(",", ":")).encode("utf-8")
+                self._write_frame(self._to_pad, payload)
             return True
         except OSError:
             log.warning("redirected-folder write failed; waiting for it to return")
@@ -96,12 +107,38 @@ class FolderLink:
 
     def _write_frame(self, directory: Path, payload: bytes) -> None:
         with self._write_lock:
+            self._write_frame_locked(directory, payload)
+
+    def _write_frame_locked(self, directory: Path, payload: bytes) -> None:
+        self._sequence += 1
+        name = f"{time.time_ns():020d}-{os.getpid()}-{self._sequence:08d}"
+        temporary = directory / f".{name}.tmp"
+        complete = directory / f"{name}.json"
+        temporary.write_bytes(payload)
+        os.replace(temporary, complete)
+
+    def _write_mailbox(self, message: dict) -> None:
+        with self._write_lock:
             self._sequence += 1
-            name = f"{time.time_ns():020d}-{os.getpid()}-{self._sequence:08d}"
-            temporary = directory / f".{name}.tmp"
-            complete = directory / f"{name}.json"
-            temporary.write_bytes(payload)
-            os.replace(temporary, complete)
+            envelope = {
+                "r": self._run_id,
+                "q": self._sequence,
+                "m": message,
+            }
+            payload = json.dumps(envelope, separators=(",", ":")).encode("utf-8")
+            if len(payload) >= MAILBOX_SIZE:
+                self._write_frame_locked(
+                    self._to_pad,
+                    json.dumps(message, separators=(",", ":")).encode("utf-8"),
+                )
+                return
+            payload += b"\n" + (b" " * (MAILBOX_SIZE - len(payload) - 1))
+            path = self._mailboxes / f"{message['t']}.mailbox"
+            with path.open("r+b", buffering=0) as handle:
+                handle.seek(0)
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
 
     @staticmethod
     def _clear_frames(directory: Path) -> None:
@@ -117,11 +154,14 @@ class FolderLink:
         try:
             self._to_pad.mkdir(exist_ok=True)
             self._to_daemon.mkdir(exist_ok=True)
+            self._mailboxes.mkdir(exist_ok=True)
             # Old key events must never replay after a reconnect. Old outbound
             # state is also discarded; the bridge heartbeat triggers a fresh
             # complete push through the normal on-connect callback.
             self._clear_frames(self._to_daemon)
             self._clear_frames(self._to_pad)
+            for kind in MAILBOX_TYPES:
+                (self._mailboxes / f"{kind}.mailbox").write_bytes(b" " * MAILBOX_SIZE)
             try:
                 self._alive.unlink()
             except FileNotFoundError:

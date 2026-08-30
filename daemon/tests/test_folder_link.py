@@ -74,11 +74,31 @@ def test_state_flows_from_daemon_to_folder(tmp_path):
         assert wait_until(lambda: link.connected)
 
         assert link.send({"t": "states", "v": ["working"]}) is True
+        mailbox = tmp_path / "mailboxes" / "states.mailbox"
+        envelope = json.loads(mailbox.read_text())
+        assert envelope["m"] == {
+            "t": "states",
+            "v": ["working"],
+        }
+        assert list((tmp_path / "to-pad").glob("*.json")) == []
+    finally:
+        link.stop()
+
+
+def test_ordered_type_message_still_uses_the_spool(tmp_path):
+    link = FolderLink(lambda _message: None, tmp_path)
+    link.start()
+    try:
+        assert wait_until(lambda: (tmp_path / "to-pad").is_dir())
+        touch_alive(tmp_path)
+        assert wait_until(lambda: link.connected)
+
+        assert link.send({"t": "type", "v": "ctrl+1"}) is True
         files = list((tmp_path / "to-pad").glob("*.json"))
         assert len(files) == 1
         assert json.loads(files[0].read_text()) == {
-            "t": "states",
-            "v": ["working"],
+            "t": "type",
+            "v": "ctrl+1",
         }
     finally:
         link.stop()

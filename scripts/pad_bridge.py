@@ -237,14 +237,32 @@ def clear_folder_frames(directory: Path) -> None:
             pass
 
 
+def relay_folder_mailboxes(mailboxes: Path, seen: dict[str, tuple], pad: serial.Serial) -> None:
+    """Forward changed fixed mailboxes without directory create/rename latency."""
+    for path in mailboxes.glob("*.mailbox"):
+        try:
+            envelope = json.loads(path.read_bytes().decode("utf-8"))
+            message = envelope.get("m")
+            identity = (envelope.get("r"), envelope.get("q"))
+        except (OSError, ValueError, UnicodeDecodeError):
+            continue
+        if not isinstance(message, dict) or identity == seen.get(path.name):
+            continue
+        payload = json.dumps(message, separators=(",", ":")).encode("utf-8")
+        pad.write(payload + b"\n")
+        seen[path.name] = identity
+
+
 def relay_folder(pad: serial.Serial, root: Path) -> None:
     """Pump frames through a folder redirected into the remote RDP session."""
     to_pad = root / "to-pad"
     to_daemon = root / "to-daemon"
+    mailboxes = root / "mailboxes"
     alive = root / "bridge.alive"
     root.mkdir(parents=True, exist_ok=True)
     to_pad.mkdir(exist_ok=True)
     to_daemon.mkdir(exist_ok=True)
+    mailboxes.mkdir(exist_ok=True)
 
     # Neither old key presses nor old LED state should replay after reconnect.
     # The alive marker below makes the daemon push a fresh complete state.
@@ -254,6 +272,7 @@ def relay_folder(pad: serial.Serial, root: Path) -> None:
     pad_buffer = b""
     sequence = 0
     last_alive = 0.0
+    seen_mailboxes = {}
 
     while True:
         now = time.monotonic()
@@ -285,6 +304,7 @@ def relay_folder(pad: serial.Serial, root: Path) -> None:
 
         # Daemon -> pad
         try:
+            relay_folder_mailboxes(mailboxes, seen_mailboxes, pad)
             for path in sorted(to_pad.glob("*.json")):
                 try:
                     payload = path.read_bytes().strip()
@@ -378,11 +398,16 @@ def main(argv: list[str] | None = None) -> int:
     else:
         log.info("bridging pad -> %s:%d", args.host, args.port)
 
+    announced_missing = False
     try:
         while True:
             port = find_pad(args.serial, args.baud)
             if port is None:
-                log.info("keybow not found; retrying")
+                if not announced_missing:
+                    log.info("keybow not found; waiting for it to appear")
+                    announced_missing = True
+                else:
+                    log.debug("keybow still not found")
                 time.sleep(RECONNECT_DELAY)
                 continue
 
@@ -397,6 +422,7 @@ def main(argv: list[str] | None = None) -> int:
                 time.sleep(RECONNECT_DELAY)
                 continue
 
+            announced_missing = False
             log.info("pad on %s", port)
             try:
                 if folder is not None:
