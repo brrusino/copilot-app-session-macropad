@@ -3,16 +3,12 @@
 
 Windows App on macOS forwards keyboard input but not serial/COM devices. It
 does, however, expose a selected Mac folder as a bidirectional network drive in
-the remote session. This transport uses that folder as two small spool queues:
+the remote session. This transport uses only fixed file names in that folder.
 
-``to-pad``
-    State, palette, brightness, and heartbeat frames written by the daemon.
-
-``to-daemon``
-    Key and heartbeat frames written by the Mac bridge.
-
-The firmware renders pulse and breathe effects itself, so this carries sparse
-semantic state changes rather than animation frames.
+Directory enumeration through the redirected filesystem is both slow and, on
+the live Windows App path, can hang or return malformed names. Recurring state
+therefore uses pre-existing fixed-size mailboxes, while ordered messages use
+two append-only JSONL files.
 """
 
 from __future__ import annotations
@@ -31,9 +27,7 @@ log = logging.getLogger(__name__)
 EventCallback = Callable[[dict], None]
 
 # Kept below the existing 0.18-second action-key flash, so a host action starts
-# while the physical confirmation is still visible. The redirected drive is a
-# network filesystem, so polling it at the serial link's 0.02-second cadence
-# would add traffic without a visible responsiveness gain.
+# while the physical confirmation is still visible.
 POLL_INTERVAL = 0.1
 
 # The pad firmware considers a two-second heartbeat stale after six seconds.
@@ -43,7 +37,7 @@ BRIDGE_ALIVE_TIMEOUT = 6.0
 # The firmware's receive buffer is 4096 bytes. Fixed-size mailbox files use the
 # same protocol boundary and are padded with JSON-safe whitespace.
 MAILBOX_SIZE = 4096
-MAILBOX_TYPES = frozenset(("states", "hb", "focus", "palette", "brightness", "levels"))
+MAILBOX_TYPES = ("states", "hb", "focus", "palette", "brightness", "levels")
 
 
 class FolderLink:
@@ -52,14 +46,15 @@ class FolderLink:
     def __init__(self, on_event: EventCallback, root: Path) -> None:
         self._on_event = on_event
         self.root = Path(root)
-        self._to_pad = self.root / "to-pad"
-        self._to_daemon = self.root / "to-daemon"
-        self._mailboxes = self.root / "mailboxes"
+        self._to_pad = self.root / "to-pad.jsonl"
+        self._to_daemon = self.root / "to-daemon.jsonl"
         self._alive = self.root / "bridge.alive"
         self._connected = False
         self._prepared = False
         self._alive_signature: int | None = None
         self._last_bridge_seen = 0.0
+        self._inbound_offset = 0
+        self._inbound_buffer = b""
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._on_connect: Callable[[], None] | None = None
@@ -97,7 +92,7 @@ class FolderLink:
                 self._write_mailbox(message)
             else:
                 payload = json.dumps(message, separators=(",", ":")).encode("utf-8")
-                self._write_frame(self._to_pad, payload)
+                self._append_frame(self._to_pad, payload)
             return True
         except OSError:
             log.warning("redirected-folder write failed; waiting for it to return")
@@ -105,17 +100,12 @@ class FolderLink:
             self._prepared = False
             return False
 
-    def _write_frame(self, directory: Path, payload: bytes) -> None:
+    def _append_frame(self, path: Path, payload: bytes) -> None:
         with self._write_lock:
-            self._write_frame_locked(directory, payload)
-
-    def _write_frame_locked(self, directory: Path, payload: bytes) -> None:
-        self._sequence += 1
-        name = f"{time.time_ns():020d}-{os.getpid()}-{self._sequence:08d}"
-        temporary = directory / f".{name}.tmp"
-        complete = directory / f"{name}.json"
-        temporary.write_bytes(payload)
-        os.replace(temporary, complete)
+            with path.open("ab", buffering=0) as handle:
+                handle.write(payload + b"\n")
+                handle.flush()
+                os.fsync(handle.fileno())
 
     def _write_mailbox(self, message: dict) -> None:
         with self._write_lock:
@@ -127,47 +117,40 @@ class FolderLink:
             }
             payload = json.dumps(envelope, separators=(",", ":")).encode("utf-8")
             if len(payload) >= MAILBOX_SIZE:
-                self._write_frame_locked(
-                    self._to_pad,
-                    json.dumps(message, separators=(",", ":")).encode("utf-8"),
-                )
+                with self._to_pad.open("ab", buffering=0) as handle:
+                    handle.write(
+                        json.dumps(message, separators=(",", ":")).encode("utf-8")
+                        + b"\n"
+                    )
+                    handle.flush()
+                    os.fsync(handle.fileno())
                 return
             payload += b"\n" + (b" " * (MAILBOX_SIZE - len(payload) - 1))
-            path = self._mailboxes / f"{message['t']}.mailbox"
+            path = self.root / f"mailbox-{message['t']}.json"
             with path.open("r+b", buffering=0) as handle:
                 handle.seek(0)
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
 
-    @staticmethod
-    def _clear_frames(directory: Path) -> None:
-        for path in directory.glob("*.json"):
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-
     def _prepare(self) -> bool:
         if not self.root.is_dir():
             return False
         try:
-            self._to_pad.mkdir(exist_ok=True)
-            self._to_daemon.mkdir(exist_ok=True)
-            self._mailboxes.mkdir(exist_ok=True)
-            # Old key events must never replay after a reconnect. Old outbound
-            # state is also discarded; the bridge heartbeat triggers a fresh
-            # complete push through the normal on-connect callback.
-            self._clear_frames(self._to_daemon)
-            self._clear_frames(self._to_pad)
+            # Truncating fixed paths avoids directory enumeration and prevents
+            # old key events or typed commands from replaying after reconnect.
+            self._to_daemon.write_bytes(b"")
+            self._to_pad.write_bytes(b"")
             for kind in MAILBOX_TYPES:
-                (self._mailboxes / f"{kind}.mailbox").write_bytes(b" " * MAILBOX_SIZE)
+                (self.root / f"mailbox-{kind}.json").write_bytes(b" " * MAILBOX_SIZE)
             try:
                 self._alive.unlink()
             except FileNotFoundError:
                 pass
             self._alive_signature = None
             self._last_bridge_seen = 0.0
+            self._inbound_offset = 0
+            self._inbound_buffer = b""
             self._prepared = True
             return True
         except OSError:
@@ -187,17 +170,28 @@ class FolderLink:
         )
 
     def _consume_events(self) -> None:
-        for path in sorted(self._to_daemon.glob("*.json")):
+        size = self._to_daemon.stat().st_size
+        if size < self._inbound_offset:
+            self._inbound_offset = 0
+            self._inbound_buffer = b""
+        if size == self._inbound_offset:
+            return
+
+        with self._to_daemon.open("rb") as handle:
+            handle.seek(self._inbound_offset)
+            chunk = handle.read()
+        self._inbound_offset += len(chunk)
+        self._inbound_buffer += chunk
+
+        while b"\n" in self._inbound_buffer:
+            raw, _, self._inbound_buffer = self._inbound_buffer.partition(b"\n")
+            raw = raw.strip()
+            if not raw:
+                continue
             try:
-                raw = path.read_bytes()
                 message = json.loads(raw.decode("utf-8"))
-            except (OSError, ValueError, UnicodeDecodeError):
-                message = None
-            finally:
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
+            except (ValueError, UnicodeDecodeError):
+                continue
             if not isinstance(message, dict):
                 continue
             try:

@@ -220,26 +220,21 @@ def test_daemon_connection(host: str, port: int, token: str) -> str:
             return "rejected"
 
 
-def write_folder_frame(directory: Path, payload: bytes, sequence: int) -> None:
-    """Publish one complete frame without exposing a partial file."""
-    name = f"{time.time_ns():020d}-{os.getpid()}-{sequence:08d}"
-    temporary = directory / f".{name}.tmp"
-    complete = directory / f"{name}.json"
-    temporary.write_bytes(payload)
-    os.replace(temporary, complete)
+FOLDER_MAILBOX_TYPES = ("states", "hb", "focus", "palette", "brightness", "levels")
 
 
-def clear_folder_frames(directory: Path) -> None:
-    for path in directory.glob("*.json"):
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
+def append_folder_frame(path: Path, payload: bytes) -> None:
+    """Append one ordered JSON frame to a fixed path."""
+    with path.open("ab", buffering=0) as handle:
+        handle.write(payload + b"\n")
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
-def relay_folder_mailboxes(mailboxes: Path, seen: dict[str, tuple], pad: serial.Serial) -> None:
+def relay_folder_mailboxes(root: Path, seen: dict[str, tuple], pad: serial.Serial) -> None:
     """Forward changed fixed mailboxes without directory create/rename latency."""
-    for path in mailboxes.glob("*.mailbox"):
+    for kind in FOLDER_MAILBOX_TYPES:
+        path = root / f"mailbox-{kind}.json"
         try:
             envelope = json.loads(path.read_bytes().decode("utf-8"))
             message = envelope.get("m")
@@ -255,22 +250,19 @@ def relay_folder_mailboxes(mailboxes: Path, seen: dict[str, tuple], pad: serial.
 
 def relay_folder(pad: serial.Serial, root: Path) -> None:
     """Pump frames through a folder redirected into the remote RDP session."""
-    to_pad = root / "to-pad"
-    to_daemon = root / "to-daemon"
-    mailboxes = root / "mailboxes"
+    to_pad = root / "to-pad.jsonl"
+    to_daemon = root / "to-daemon.jsonl"
     alive = root / "bridge.alive"
     root.mkdir(parents=True, exist_ok=True)
-    to_pad.mkdir(exist_ok=True)
-    to_daemon.mkdir(exist_ok=True)
-    mailboxes.mkdir(exist_ok=True)
 
-    # Neither old key presses nor old LED state should replay after reconnect.
-    # The alive marker below makes the daemon push a fresh complete state.
-    clear_folder_frames(to_daemon)
-    clear_folder_frames(to_pad)
+    # Neither old key presses nor old typed commands should replay after
+    # reconnect. The alive marker makes the daemon push fresh complete state.
+    to_daemon.write_bytes(b"")
+    to_pad.write_bytes(b"")
 
     pad_buffer = b""
-    sequence = 0
+    to_pad_buffer = b""
+    to_pad_offset = 0
     last_alive = 0.0
     seen_mailboxes = {}
 
@@ -296,25 +288,29 @@ def relay_folder(pad: serial.Serial, root: Path) -> None:
                         continue
                     if not isinstance(message, dict):
                         continue
-                    sequence += 1
-                    write_folder_frame(to_daemon, raw, sequence)
+                    append_folder_frame(to_daemon, raw)
         except (serial.SerialException, OSError):
             log.warning("pad went away")
             return
 
         # Daemon -> pad
         try:
-            relay_folder_mailboxes(mailboxes, seen_mailboxes, pad)
-            for path in sorted(to_pad.glob("*.json")):
-                try:
-                    payload = path.read_bytes().strip()
+            relay_folder_mailboxes(root, seen_mailboxes, pad)
+            size = to_pad.stat().st_size
+            if size < to_pad_offset:
+                to_pad_offset = 0
+                to_pad_buffer = b""
+            if size > to_pad_offset:
+                with to_pad.open("rb") as handle:
+                    handle.seek(to_pad_offset)
+                    chunk = handle.read()
+                to_pad_offset += len(chunk)
+                to_pad_buffer += chunk
+                while b"\n" in to_pad_buffer:
+                    payload, _, to_pad_buffer = to_pad_buffer.partition(b"\n")
+                    payload = payload.strip()
                     if payload:
                         pad.write(payload + b"\n")
-                finally:
-                    try:
-                        path.unlink()
-                    except FileNotFoundError:
-                        pass
         except (serial.SerialException, OSError):
             log.warning("redirected folder or pad went away")
             return
