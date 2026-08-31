@@ -74,6 +74,10 @@ def _refresh_session_controls(hwnd: int) -> None:
 
     import uiautomation as auto
 
+    # Its default is "@AutomationLog.txt" in the process working directory,
+    # which is useful for interactive debugging but wrong for a daemon that
+    # already has a rotating log.
+    auto.Logger.SetLogFile("")
     root = auto.ControlFromHandle(hwnd)
     found = {}
     for control, _depth in auto.WalkControl(
