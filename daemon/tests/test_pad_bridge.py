@@ -62,49 +62,6 @@ def test_probe_never_writes_a_frame_the_console_could_echo(monkeypatch):
     assert handle.writes == []
 
 
-def test_folder_frames_append_in_order(tmp_path):
-    path = tmp_path / "to-daemon.jsonl"
-    path.write_bytes(b"")
-
-    pad_bridge.append_folder_frame(path, b'{"t":"one"}')
-    pad_bridge.append_folder_frame(path, b'{"t":"two"}')
-
-    assert path.read_bytes() == b'{"t":"one"}\n{"t":"two"}\n'
-
-
-def test_changed_folder_mailbox_is_forwarded_once(tmp_path):
-    for kind in pad_bridge.FOLDER_MAILBOX_TYPES:
-        (tmp_path / f"mailbox-{kind}.json").write_text(" ")
-    envelope = {
-        "r": "run-one",
-        "q": 4,
-        "m": {"t": "states", "v": ["working"]},
-    }
-    (tmp_path / "mailbox-states.json").write_text(json.dumps(envelope))
-    pad = FakeSerial()
-    seen = {}
-
-    pad_bridge.relay_folder_mailboxes(tmp_path, seen, pad)
-    pad_bridge.relay_folder_mailboxes(tmp_path, seen, pad)
-
-    assert pad.writes == [b'{"t":"states","v":["working"]}\n']
-
-
-def test_new_daemon_run_with_reset_sequence_is_not_ignored(tmp_path):
-    for kind in pad_bridge.FOLDER_MAILBOX_TYPES:
-        (tmp_path / f"mailbox-{kind}.json").write_text(" ")
-    path = tmp_path / "mailbox-states.json"
-    path.write_text(json.dumps({"r": "old", "q": 50, "m": {"t": "hb"}}))
-    pad = FakeSerial()
-    seen = {}
-    pad_bridge.relay_folder_mailboxes(tmp_path, seen, pad)
-
-    path.write_text(json.dumps({"r": "new", "q": 1, "m": {"t": "hb"}}))
-    pad_bridge.relay_folder_mailboxes(tmp_path, seen, pad)
-
-    assert pad.writes == [b'{"t":"hb"}\n', b'{"t":"hb"}\n']
-
-
 def test_connect_daemon_sends_the_token_first():
     port = free_port()
     listener = socket.socket()

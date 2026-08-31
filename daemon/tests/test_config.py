@@ -40,24 +40,23 @@ def test_connect_mode_round_trips(tmp_path):
     assert cfg.bridge_token == "secret"
 
 
-def test_both_transport_round_trips(tmp_path):
-    path = write(tmp_path, '[pad]\ntransport = "both"\n')
-    assert config_module.load(path).pad_transport == "both"
-
-
-def test_redirected_folder_is_additive(tmp_path):
+def test_dev_tunnel_round_trips(tmp_path):
     path = write(
         tmp_path,
         """
-        [pad]
-        transport = "serial"
-        [folder]
-        path = "X:/CopilotMacropad"
+        [devtunnel]
+        id = "copilot-macropad"
+        command = "C:/tools/devtunnel.exe"
         """,
     )
     cfg = config_module.load(path)
-    assert cfg.pad_transport == "serial"
-    assert cfg.folder_path == config_module.Path("X:/CopilotMacropad")
+    assert cfg.devtunnel_id == "copilot-macropad"
+    assert cfg.devtunnel_command == "C:/tools/devtunnel.exe"
+
+
+def test_both_transport_round_trips(tmp_path):
+    path = write(tmp_path, '[pad]\ntransport = "both"\n')
+    assert config_module.load(path).pad_transport == "both"
 
 
 def test_rejects_unknown_transport(tmp_path):

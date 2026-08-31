@@ -74,9 +74,11 @@ class Config:
     #: connections (a Cloud PC or VM behind a gateway, or a firewall you are not
     #: an admin on).
     bridge_mode: str = "listen"
-    #: Optional folder redirected from a macOS Windows App client. Additive to
-    #: the primary transport, so serial keeps working from Windows.
-    folder_path: Path | None = None
+    #: Optional persistent Microsoft Dev Tunnel exposing the local network
+    #: listener. The daemon supervises its host process so remote restarts do
+    #: not require a manual terminal.
+    devtunnel_id: str | None = None
+    devtunnel_command: str = "devtunnel"
     hook_host: str = "127.0.0.1"
     hook_port: int = DEFAULT_HOOK_PORT
     slot_count: int = DEFAULT_SLOT_COUNT
@@ -154,9 +156,9 @@ def load(path: Path | None = None) -> Config:
         )
     cfg.bridge_mode = bridge_mode
 
-    folder = data.get("folder", {})
-    if folder.get("path"):
-        cfg.folder_path = Path(folder["path"]).expanduser()
+    devtunnel = data.get("devtunnel", {})
+    cfg.devtunnel_id = devtunnel.get("id") or None
+    cfg.devtunnel_command = str(devtunnel.get("command", cfg.devtunnel_command))
 
     hooks = data.get("hooks", {})
     cfg.hook_host = hooks.get("host", cfg.hook_host)

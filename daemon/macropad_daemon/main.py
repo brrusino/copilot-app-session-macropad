@@ -60,6 +60,7 @@ class Daemon:
         self.store = StateStore(slot_count=cfg.slot_count)
         self.link = self._build_link(cfg)
         self.link.set_on_connect(self._on_pad_connect)
+        self.dev_tunnel = self._build_dev_tunnel(cfg)
         self.hooks = hook_server_for(cfg, self._on_hook)
         self._last_pushed: list[str] | None = None
         self._last_states: list[str] | None = None
@@ -106,24 +107,26 @@ class Daemon:
                 baud=cfg.serial_baud,
             )
 
-        links = []
-        if cfg.pad_transport in ("serial", "both"):
-            links.append(serial_link())
-        if cfg.pad_transport in ("network", "both"):
-            links.append(network_link())
-        if cfg.folder_path is not None:
-            from .folder_link import FolderLink
+        if cfg.pad_transport == "network":
+            return network_link()
+        if cfg.pad_transport == "both":
+            from .multi_link import MultiLink
 
-            links.append(FolderLink(self._on_pad_event, cfg.folder_path))
+            return MultiLink((serial_link(), network_link()))
+        return serial_link()
 
-        if len(links) == 1:
-            return links[0]
-        if not links:
-            raise ValueError("no pad transport configured")
+    @staticmethod
+    def _build_dev_tunnel(cfg: config_module.Config):
+        if not cfg.devtunnel_id:
+            return None
+        from .dev_tunnel import DevTunnelHost
 
-        from .multi_link import MultiLink
-
-        return MultiLink(links)
+        return DevTunnelHost(
+            tunnel_id=cfg.devtunnel_id,
+            port=cfg.bridge_port,
+            command=cfg.devtunnel_command,
+            log_file=cfg.copilot_home / "macropad-devtunnel.log",
+        )
 
     # -- inputs ----------------------------------------------------------
 
@@ -367,6 +370,14 @@ class Daemon:
             return 3
 
         self.link.start()
+        if self.dev_tunnel is not None:
+            try:
+                self.dev_tunnel.start()
+            except (OSError, RuntimeError) as exc:
+                log.error("cannot start dev tunnel: %s", exc)
+                self.link.stop()
+                self.hooks.stop()
+                return 5
         self._quit = threading.Event()
         self.hooks.set_quit_callback(self._quit.set)
         log.info(
@@ -398,6 +409,8 @@ class Daemon:
             log.exception("daemon stopped on an unhandled error")
             return 4
         finally:
+            if self.dev_tunnel is not None:
+                self.dev_tunnel.stop()
             self.link.stop()
             self.hooks.stop()
 

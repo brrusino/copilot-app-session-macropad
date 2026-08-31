@@ -77,21 +77,6 @@ def test_both_transport_builds_serial_and_network_links(tmp_path):
     assert (tmp_path / "macropad.token").is_file()
 
 
-def test_folder_transport_is_added_to_serial(tmp_path):
-    from macropad_daemon.folder_link import FolderLink
-    from macropad_daemon.multi_link import MultiLink
-    from macropad_daemon.serial_link import SerialLink
-
-    cfg = config_module.Config(folder_path=tmp_path)
-    uninitialized = object.__new__(main_module.Daemon)
-
-    link = uninitialized._build_link(cfg)
-
-    assert isinstance(link, MultiLink)
-    assert any(isinstance(child, SerialLink) for child in link._links)
-    assert any(isinstance(child, FolderLink) for child in link._links)
-
-
 def test_next_attention_goes_to_the_session_that_wants_you(daemon):
     """The one action a session key cannot replace: rows 1 and 2 already give
     random access to every pin, so this has to act on state instead."""
