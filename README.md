@@ -93,7 +93,8 @@ Where they disagree, the rules are specific rather than "newest wins":
 The daemon **never writes to the Copilot app's database**. That database is live
 and in WAL mode while the app runs, so every connection is opened read-only.
 Everything that changes state goes through a surface the app owns — its own
-keyboard shortcuts, typed by the pad, and `ghapp://` deep links.
+keyboard shortcuts, exact sidebar-row clicks through Windows UI Automation, and
+`ghapp://` deep links.
 
 The hook config is **purely additive**. The Copilot CLI loads every `*.json` in
 its hooks directory, so installation writes only `macropad.json` and never
@@ -201,14 +202,15 @@ palette, brightness, solid, pulse, and breathe messages travel back to the pad.
 
 ### Getting the daemon and the pad connected
 
-**Session switching and dictation work regardless, and need nothing installed.**
-The pad is a USB HID keyboard: it types the app's `Ctrl+<n>` shortcut and the
-Ctrl+Win dictation chord into whatever it's plugged into, and RDP forwards
-keystrokes to the remote session like any other typing. No daemon required for
-either.
+**Dictation and fixed action keys work regardless.** The pad is a USB HID
+keyboard, so RDP forwards those chords into the remote session like any other
+typing.
 
-**What the daemon adds is the LEDs** — live session state — and for that it
-needs a two-way channel to the pad. In order of preference:
+**Session keys and LEDs need the daemon's two-way channel.** The app's
+`Ctrl+<n>` shortcut counts expanded child sessions, while the pad's slots and
+LEDs deliberately represent only top-level parents. The daemon therefore uses
+the selected parent's workspace ID to click its exact sidebar row. In order of
+preference:
 
 **Option 1: RDP COM port redirection.** Start here on a Windows RDP client.
 
@@ -245,9 +247,9 @@ to the daemon over TCP. `scripts/pad-bridge.ps1` needs only Windows PowerShell
 Use this when the pad's machine can run something. See
 [Using the network bridge](#using-the-network-bridge).
 
-**If neither is available**, you still get session switching, actions and
-dictation — the pad types those itself. You just lose the LEDs, because a
-keyboard has no return path.
+**If neither is available**, fixed actions and dictation still work because the
+pad types those itself. Session keys cannot select an exact parent and LEDs
+cannot receive state, because a keyboard has no return path.
 
 ### When the pad's machine can run nothing at all
 
@@ -282,11 +284,12 @@ Ruled out, so you don't waste time on them:
 This is the part worth understanding, because it's the opposite of how the
 project started.
 
-**The pad types; the daemon never does.** Pressing a session key makes the pad
-type the app's own `Ctrl+<n>` shortcut over USB HID. The daemon's role is
-lights and bookkeeping.
+**The pad types fixed chords; the daemon selects sessions by identity.**
+Pressing a session key sends its slot over the serial or network bridge. The
+daemon resolves that slot to the same top-level parent used for its LED, then
+clicks the sidebar row whose automation ID contains that workspace UUID.
 
-That isn't a stylistic choice. The daemon's only mechanism is Win32
+The split isn't stylistic. The daemon cannot type with Win32
 `SendInput`, and that reaches nothing unless the daemon happens to be running
 on the interactive desktop — sending `Win+R` from a service-like context
 produces no Run dialog at all. Over RDP it's worse in principle: the keyboard
@@ -294,14 +297,15 @@ belongs to the machine in front of you, not the one the daemon runs on. The pad
 is a real USB keyboard, so its keystrokes are forwarded like any other. The
 dictation chord worked from day one for exactly this reason.
 
-Anything the *daemon* decides — which session is "previous" or "next" — is sent
-to
-the pad as a chord for the pad to type.
+Session selection is different: the app exposes each visible row through
+Windows UI Automation as `workspace-preview-trigger-<workspace-id>`. One tree
+walk caches every row, then invokes its session-name button semantically. A
+live cached invocation returned in 94ms and the target parent was active in
+672ms, independent of how many child rows are expanded above it.
 
-The `ghapp://sessions/<id>` deep link is still there as a fallback for slots
-past the app's single-digit shortcuts, or when the pad is disconnected. It
-works, but it hands a URL to the shell, which spawns `github.exe` to route it:
-**measured at ~4.5s** versus about a second for the keystroke.
+The `ghapp://sessions/<id>` deep link remains the exact fallback when the
+accessibility row cannot be found. It works, but hands a URL to the shell,
+which spawns `github.exe` to route it — measured at roughly 4.5 seconds.
 
 ### Shortcuts this relies on
 
@@ -309,7 +313,7 @@ All confirmed against a running instance — the first eight read straight off
 the app's own accessibility labels, the last two verified in use:
 
 ```
-Ctrl+<n>          select the nth pinned session
+Ctrl+<n>          select the nth visible sidebar row (not used for session keys)
 Ctrl+B            toggle sidebar
 Ctrl+K            search
 Ctrl+Comma        settings
@@ -661,15 +665,11 @@ Two details that matter:
 
 ## Which session is on which key
 
-Keys 1-8 map to `Ctrl+1` … `Ctrl+8`, which is the app's own shortcut for
-selecting the nth **pinned session** — so the keys follow your pins in sidebar
-order, and re-ordering your pins re-orders the keys. Because the app resolves
-the number itself, the pad and the app can never disagree about which session
-key 3 means.
-
-The daemon reads the same pinned list to decide what each LED shows. It skips
-archived pins, and skips child sessions so a key always addresses something you
-drive directly — though a child's *work* still lights up its parent.
+Keys 1-8 follow the app's pinned order. The daemon skips archived pins and
+child sessions, so each slot resolves to a top-level parent workspace and both
+the click and LED use that same object. Re-ordering pins re-orders the keys;
+expanding or opening children does not. A child's *work* still lights up its
+parent.
 
 ## Dictation
 
@@ -825,8 +825,6 @@ scripts/    install and flash helpers, plus pad_bridge.py for remote pads
 
 Confirmed working on real hardware, against the live app:
 
-- Session keys switch sessions by typing `Ctrl+<n>` — **about a second**,
-  versus ~4.5s for the deep link it replaced.
 - Pinned sessions resolve to slots in sidebar order, with real names, unread
   flags and run state, read-only.
 - LEDs track live state, including rolling a child's *work* up to its parent.
@@ -836,6 +834,13 @@ Confirmed working on real hardware, against the live app:
 - The generated hook commands run, exit 0, emit nothing, and drive the state
   machine.
 - Installing hooks leaves every other file in `~/.copilot/hooks/` byte-identical.
+
+Implemented and covered by host-side tests, but requiring firmware v4 to verify
+on the physical pad:
+
+- Session keys click the exact top-level parent row by workspace ID, ignoring
+  expanded child rows. A cached live-app invocation returned in 94ms and the
+  target parent was active in 672ms.
 - Autostart via the Startup folder, and `--quit` for a clean stop.
 
 Still unverified:

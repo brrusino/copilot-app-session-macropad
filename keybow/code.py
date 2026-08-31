@@ -44,7 +44,9 @@ import config
 #: 1 - initial: state, palette, brightness, key events
 #: 2 - `type` (host asks the pad to type a chord) and `busy_done`
 #: 3 - `levels` (host sets the brightness levels the pad cycles through)
-FIRMWARE_VERSION = 3
+#: 4 - session keys stop typing positional shortcuts; the daemon selects the
+#:     exact top-level parent by workspace id
+FIRMWARE_VERSION = 4
 SLOT_COUNT = len(config.SESSION_KEYS)
 
 keybow = PMK(Hardware())
@@ -667,6 +669,11 @@ def _on_down(key_number, now):
         # session takes several seconds, and a brief blip leaves you unsure
         # whether the press registered at all.
         _press_flash[key_number] = now + _PRESS_FLASH_MAX
+        if not _SEND_SHORTCUTS and not _app_focused and _FOCUS_CHORD:
+            # The daemon owns exact parent selection, but it still cannot raise
+            # a background window. The pad is the physical input source, so it
+            # keeps this one part of the old path.
+            _type_all((_FOCUS_CHORD,))
 
     typed = False
     if _SEND_SHORTCUTS:

@@ -138,19 +138,16 @@ FREE_KEYS = ()
 
 # Type the app's own Ctrl+<n> shortcut when a session key is pressed.
 #
-# This is how session switching actually happens, and it belongs on the pad
-# rather than in the daemon. The daemon can only synthesise keystrokes with
-# SendInput, which silently reaches nothing unless the daemon happens to be
-# running on the interactive desktop -- and over RDP the keyboard belongs to
-# the client machine, not the one the daemon runs on. The pad is a real USB
-# keyboard, so RDP forwards what it types like any other key. The dictation
-# chord already proved that path works.
+# Disabled because the shortcut counts every expanded child session in the
+# sidebar. The LEDs deliberately represent only top-level parents, so a
+# positional shortcut and the illuminated slot diverge as soon as a parent has
+# children open. The daemon now clicks the exact parent row by its stable
+# workspace automation id instead.
 #
-# The serial link is still what carries LED state back, and the daemon still
-# sees the press; it just no longer tries to perform the switch itself.
+# Session keys still raise the app from the pad -- only the positional Ctrl+N
+# part is removed. Every fixed action remains firmware HID.
 #
-#   Ctrl+1 .. Ctrl+8 -> session slots 0-7, in pinned order
-SEND_SESSION_SHORTCUTS = True
+SEND_SESSION_SHORTCUTS = False
 
 # Global brightness scale applied to every colour.
 #

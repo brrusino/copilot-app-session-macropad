@@ -46,16 +46,15 @@ DEFAULT_RECONCILE_INTERVAL = 1.0
 #:     Ctrl+Alt+B      toggle review panel
 #:     Ctrl+[ / Ctrl+] back / forward
 #:     Ctrl+Alt+\      open plan
-#:     Ctrl+<n>        select the nth pinned session
+#:     Ctrl+<n>        select the nth visible sidebar row (not used by session keys)
 #:     Ctrl+N          new session
 #:     Ctrl+Shift+O    new chat
 #:
-#: All of them are typed by the **pad**. This process cannot synthesise a
+#: Fixed chords are typed by the **pad**. This process cannot synthesise a
 #: keystroke at all: SendInput reaches nothing from a background daemon, and
-#: over RDP the keyboard belongs to the client machine anyway. The fixed ones
-#: live in ``keybow/config.py`` so they work with no daemon running; the daemon
-#: only supplies the ones it has to compute, which is Ctrl+<n> for a slot it
-#: worked out itself.
+#: over RDP the keyboard belongs to the client machine anyway. Session keys are
+#: different: the daemon clicks the exact parent row by workspace automation id,
+#: because Ctrl+<n> counts expanded child sessions.
 
 
 @dataclass

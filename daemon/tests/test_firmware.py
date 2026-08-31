@@ -485,16 +485,15 @@ def test_key_events_carry_role_metadata(firmware):
     assert described["action"] == fw_config.ACTION_KEYS[action_key]
 
 
-# --- the app's Ctrl+<n> shortcut ------------------------------------------
-# The pad types the switch itself. The daemon cannot: SendInput reaches
-# nothing unless it happens to run on the interactive desktop, and over RDP
-# the keyboard belongs to the client machine anyway.
+# --- parent-session selection ----------------------------------------------
+# Positional Ctrl+<n> counts expanded child sessions, while LED slots exclude
+# them. The pad sends the slot to the daemon, which clicks the exact parent row.
 
 
-def test_shortcuts_on_by_default(firmware):
+def test_positional_session_shortcuts_are_off_by_default(firmware):
     import config as fw_config
 
-    assert fw_config.SEND_SESSION_SHORTCUTS is True
+    assert fw_config.SEND_SESSION_SHORTCUTS is False
 
 
 def test_session_slots_map_to_the_digit_row(firmware):
@@ -522,22 +521,21 @@ def test_non_session_keys_send_no_shortcut(firmware):
     assert firmware._shortcut_for(fw_config.ROWS[2][0]) is None
 
 
-def test_pressing_a_session_key_types_the_shortcut(firmware):
+def test_pressing_a_session_key_does_not_type_a_positional_shortcut(firmware):
     import config as fw_config
 
     firmware._on_down(fw_config.SESSION_KEYS[3], 0.0)
     sends = [e for e in firmware._test_keyboard.history if e[0] == "send"]
-    assert sends == [("send", ("LEFT_CONTROL", 0x21))]   # left ctrl + 4
+    assert sends == []
 
 
-def test_the_press_event_says_the_pad_already_typed_it(firmware):
-    """Otherwise the daemon switches a second time, or fires the slow link."""
+def test_the_press_event_leaves_exact_parent_selection_to_the_daemon(firmware):
     import config as fw_config
 
     sent = []
     firmware._send = lambda msg: sent.append(msg)
     firmware._on_down(fw_config.SESSION_KEYS[0], 0.0)
-    assert sent and sent[-1].get("typed") is True
+    assert sent and "typed" not in sent[-1]
 
 
 def test_a_failed_keystroke_leaves_the_host_to_do_it(firmware):
@@ -547,6 +545,7 @@ def test_a_failed_keystroke_leaves_the_host_to_do_it(firmware):
     def boom(*_a, **_k):
         raise RuntimeError("no HID")
 
+    firmware._SEND_SHORTCUTS = True
     firmware._keyboard.send = boom
     sent = []
     firmware._send = lambda msg: sent.append(msg)
@@ -554,13 +553,13 @@ def test_a_failed_keystroke_leaves_the_host_to_do_it(firmware):
     assert sent and "typed" not in sent[-1]
 
 
-def test_shortcuts_can_be_turned_off(firmware, monkeypatch):
+def test_legacy_shortcuts_can_still_be_enabled(firmware, monkeypatch):
     import config as fw_config
 
-    monkeypatch.setattr(firmware, "_SEND_SHORTCUTS", False)
+    monkeypatch.setattr(firmware, "_SEND_SHORTCUTS", True)
     firmware._on_down(fw_config.SESSION_KEYS[0], 0.0)
     sends = [e for e in firmware._test_keyboard.history if e[0] == "send"]
-    assert sends == []
+    assert sends == [("send", ("LEFT_CONTROL", 0x1E))]
 # --- typing a chord the host asked for ------------------------------------
 
 
@@ -605,7 +604,7 @@ def test_no_focus_chord_when_the_app_is_already_in_front(firmware):
     firmware._app_focused = True
     firmware._on_down(fw_config.SESSION_KEYS[0], 0.0)
     sends = [e for e in firmware._test_keyboard.history if e[0] == "send"]
-    assert sends == [("send", ("LEFT_CONTROL", 0x1E))]
+    assert sends == []
 
 
 def test_the_app_is_raised_first_when_it_is_not_in_front(firmware):
@@ -622,6 +621,7 @@ def test_the_keystroke_waits_for_the_app_to_come_forward(firmware):
     keystroke would land wherever focus still was."""
     import config as fw_config
 
+    firmware._SEND_SHORTCUTS = True
     firmware._app_focused = False
     firmware._on_down(fw_config.SESSION_KEYS[2], 0.0)
     assert firmware._pending_chords
@@ -636,6 +636,7 @@ def test_a_stale_pending_keystroke_is_dropped(firmware):
     """Firing it later, into whatever you moved on to, is worse than dropping."""
     import config as fw_config
 
+    firmware._SEND_SHORTCUTS = True
     firmware._app_focused = False
     firmware._on_down(fw_config.SESSION_KEYS[0], 0.0)
     assert firmware._pending_chords

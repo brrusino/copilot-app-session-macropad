@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: MIT
 """Tests for deep links and keystroke chord parsing."""
 
+import sys
+import types
+
 import pytest
 
 from macropad_daemon import actions
@@ -13,6 +16,49 @@ def test_deep_link_format():
 
 def test_focus_rejects_empty_session_id():
     assert actions.focus_session("") is False
+
+
+def test_parent_workspace_automation_id_is_stable():
+    assert (
+        actions.session_automation_id("workspace-id", "session-id")
+        == "workspace-preview-trigger-workspace-id"
+    )
+
+
+def test_chat_automation_id_uses_the_session_id():
+    assert (
+        actions.session_automation_id(None, "session-id")
+        == "quick-chat-session-row-session-id"
+    )
+
+
+def test_exact_parent_click_uses_the_cached_workspace_control(monkeypatch):
+    automation_id = "workspace-preview-trigger-workspace-id"
+    calls = []
+
+    class Control:
+        def GetPattern(self, pattern):
+            calls.append(("pattern", pattern))
+            return self
+
+        def Invoke(self, **kwargs):
+            calls.append(("invoke", kwargs))
+            return True
+
+    fake_auto = types.SimpleNamespace(
+        PatternId=types.SimpleNamespace(InvokePattern="invoke")
+    )
+    monkeypatch.setitem(sys.modules, "uiautomation", fake_auto)
+    monkeypatch.setattr(actions, "IS_WINDOWS", True)
+    monkeypatch.setattr(actions, "app_window", lambda: 123)
+    monkeypatch.setattr(actions, "_session_controls_window", 123)
+    monkeypatch.setattr(actions, "_session_controls", {automation_id: Control()})
+
+    assert actions.focus_pinned_session("workspace-id", "session-id") is True
+    assert calls == [
+        ("pattern", "invoke"),
+        ("invoke", {"waitTime": 0}),
+    ]
 
 
 @pytest.mark.parametrize(

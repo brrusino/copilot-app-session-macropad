@@ -89,6 +89,42 @@ def test_next_attention_goes_to_the_session_that_wants_you(daemon):
     assert daemon.link.sent == [{"t": "type", "v": "ctrl+2"}]
 
 
+def test_session_key_clicks_the_exact_parent_workspace(daemon, monkeypatch):
+    target = session(2)
+    selected = []
+    daemon.store.apply_snapshot([session(0), session(1), target])
+    monkeypatch.setattr(main_module.actions, "app_is_foreground", lambda: True)
+    monkeypatch.setattr(
+        main_module.actions,
+        "focus_pinned_session",
+        lambda workspace_id, session_id: selected.append((workspace_id, session_id)) or True,
+    )
+    monkeypatch.setattr(daemon, "_await_navigation", lambda slot, item: None)
+
+    daemon._focus_parent_session(2, target)
+
+    assert selected == [("ws-2", "s-2")]
+
+
+def test_exact_parent_click_falls_back_to_the_session_deep_link(daemon, monkeypatch):
+    target = session(1)
+    deep_links = []
+    monkeypatch.setattr(main_module.actions, "app_is_foreground", lambda: True)
+    monkeypatch.setattr(
+        main_module.actions, "focus_pinned_session", lambda *_args: False
+    )
+    monkeypatch.setattr(
+        main_module.actions,
+        "focus_session",
+        lambda session_id: deep_links.append(session_id) or True,
+    )
+    monkeypatch.setattr(daemon, "_await_navigation", lambda slot, item: None)
+
+    daemon._focus_parent_session(1, target)
+
+    assert deep_links == ["s-1"]
+
+
 def test_a_question_outranks_unread(daemon):
     """Priority mirrors urgency: a question blocks the agent outright."""
     daemon.store.apply_snapshot(

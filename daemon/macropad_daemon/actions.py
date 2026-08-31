@@ -4,19 +4,18 @@
 Three mechanisms, all through surfaces the Copilot app actually owns. Nothing
 here writes to the app's database.
 
-**Switch session** -- the app's own ``Ctrl+<n>`` shortcut, which selects the
-nth session directly. This is the fast path and by far the most important one:
-the deep link below hands a URL to the shell, which spawns ``github.exe`` to
-route it, and that was measured at roughly 4.5 seconds before the session
-appeared. The keystroke is immediate because nothing new is launched.
+**Select a parent session** -- Windows UI Automation clicks the sidebar row
+whose stable automation id contains the workspace UUID. This is exact even when
+expanded child rows change positional shortcut numbering. A cached invocation
+returned in 94ms and the target parent was active in 672ms.
 
 **Focus a session** -- the ``ghapp://sessions/<id>`` deep link. ``ghapp:`` is
 registered in ``HKCU\\Software\\Classes`` to the app executable, so handing the
 URL to the shell focuses the session in the running instance. Kept as the
-fallback for when the app is not on screen to receive a keystroke.
+fallback when the exact accessibility row cannot be found.
 
-**Keystrokes** -- Win32 ``SendInput``, via ctypes so there is no extra
-dependency.
+**Legacy keystrokes** -- Win32 ``SendInput``, retained for diagnostics and
+older fallback paths rather than session-key navigation.
 """
 
 from __future__ import annotations
@@ -26,8 +25,15 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 from ctypes import wintypes
+from typing import Iterable
+
+try:
+    from _ctypes import COMError
+except ImportError:  # pragma: no cover - only Windows exposes COMError
+    COMError = OSError
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +48,122 @@ APP_EXECUTABLE = "github.exe"
 #: defined over the single-digit keys, so a pad with more session keys than
 #: this must fall back to the deep link for the rest.
 MAX_SHORTCUT_SLOT = 9
+
+# Measured against the live Tauri accessibility tree: workspace rows first
+# appear at depth 24. One walk caches every visible row; subsequent exact
+# parent-session clicks take tens of milliseconds instead of rescanning.
+SESSION_CONTROL_TREE_DEPTH = 24
+_session_controls_lock = threading.Lock()
+_session_controls_window: int | None = None
+_session_controls: dict[str, object] = {}
+_session_control_targets: frozenset[str] = frozenset()
+
+
+def session_automation_id(
+    workspace_id: str | None, session_id: str | None
+) -> str | None:
+    if workspace_id:
+        return f"workspace-preview-trigger-{workspace_id}"
+    if session_id:
+        return f"quick-chat-session-row-{session_id}"
+    return None
+
+
+def _refresh_session_controls(hwnd: int) -> None:
+    global _session_controls_window, _session_controls
+
+    import uiautomation as auto
+
+    root = auto.ControlFromHandle(hwnd)
+    found = {}
+    for control, _depth in auto.WalkControl(
+        root, includeTop=False, maxDepth=SESSION_CONTROL_TREE_DEPTH
+    ):
+        try:
+            automation_id = control.AutomationId or ""
+        except COMError:
+            # Status text rerenders while agents work. A control yielded just
+            # before that replacement can disappear before its properties are
+            # read; it is unrelated to the stable session rows we are caching.
+            continue
+        if automation_id.startswith(
+            ("workspace-preview-trigger-", "quick-chat-session-row-")
+        ):
+            # The identified tree item is only a container. Its session-name
+            # child is the actual button and supports InvokePattern, which is
+            # background-safe and does not depend on screen coordinates.
+            try:
+                for child in control.GetChildren():
+                    if child.GetPattern(auto.PatternId.InvokePattern):
+                        found[automation_id] = child
+                        break
+            except COMError:
+                continue
+    _session_controls_window = hwnd
+    _session_controls = found
+
+
+def warm_session_controls(
+    sessions: Iterable[tuple[str | None, str | None]],
+) -> bool:
+    """Cache exact sidebar rows once, refreshing only when a target is missing."""
+    global _session_control_targets
+
+    if not IS_WINDOWS:
+        return False
+    wanted = {
+        automation_id
+        for workspace_id, session_id in sessions
+        if (automation_id := session_automation_id(workspace_id, session_id))
+    }
+    if not wanted:
+        return False
+    hwnd = app_window()
+    if hwnd is None:
+        return False
+
+    with _session_controls_lock:
+        frozen_wanted = frozenset(wanted)
+        if hwnd == _session_controls_window and frozen_wanted == _session_control_targets:
+            return wanted <= _session_controls.keys()
+        try:
+            _refresh_session_controls(hwnd)
+        except (ImportError, LookupError, OSError, RuntimeError, COMError) as exc:
+            log.warning("could not cache Copilot session controls: %s", exc)
+            return False
+        _session_control_targets = frozen_wanted
+        return wanted <= _session_controls.keys()
+
+
+def focus_pinned_session(
+    workspace_id: str | None, session_id: str | None
+) -> bool:
+    """Click the exact parent row identified by the database, never its position."""
+    automation_id = session_automation_id(workspace_id, session_id)
+    if not automation_id or not IS_WINDOWS:
+        return False
+    hwnd = app_window()
+    if hwnd is None:
+        return False
+
+    with _session_controls_lock:
+        try:
+            if hwnd != _session_controls_window or automation_id not in _session_controls:
+                _refresh_session_controls(hwnd)
+            control = _session_controls.get(automation_id)
+            if control is None:
+                log.warning("session control not found: %s", automation_id)
+                return False
+            import uiautomation as auto
+
+            invoke = control.GetPattern(auto.PatternId.InvokePattern)
+            return bool(invoke and invoke.Invoke(waitTime=0))
+        except (ImportError, LookupError, OSError, RuntimeError, COMError) as exc:
+            # The DOM may have replaced a cached element. Invalidate it so the
+            # next press performs one fresh tree walk rather than reusing it.
+            _session_controls.pop(automation_id, None)
+            log.warning("exact session click failed for %s: %s", automation_id, exc)
+            return False
 
 
 def session_deep_link(session_id: str) -> str:

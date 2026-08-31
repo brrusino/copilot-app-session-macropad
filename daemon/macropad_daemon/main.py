@@ -50,7 +50,7 @@ NAVIGATION_TIMEOUT = 3.0
 #: Pad protocol version this daemon needs. Bumped alongside
 #: ``FIRMWARE_VERSION`` in keybow/code.py whenever the daemon starts relying on
 #: a message an older pad would silently ignore.
-REQUIRED_FIRMWARE = 3
+REQUIRED_FIRMWARE = 4
 
 
 class Daemon:
@@ -221,21 +221,37 @@ class Daemon:
             return
         self._last_session_slot = slot
         if typed_by_pad:
-            # The pad already typed Ctrl+<n> itself, which is what performs the
-            # switch. Doing it again here would either switch twice or, worse,
-            # fire the slow deep link alongside the fast keystroke.
-            log.info("slot %s -> %s (typed by the pad)", slot, session.name)
+            # Firmware before v4 still types the positional shortcut. Let that
+            # complete rather than racing it with the exact click; the daemon's
+            # version warning tells the user why child sessions still count.
+            log.info("slot %s -> %s (legacy positional shortcut)", slot, session.name)
+            target = self._await_navigation
+            args = (slot, session)
         else:
-            log.info("focus slot %s -> %s", slot, session.name)
-            actions.switch_to_slot(slot, session.session_id or "")
-        # The pad pulses white until told the navigation landed. Watch for it
-        # off-thread so the key/LED path is never blocked by a slow app.
+            log.info("focus exact parent slot %s -> %s", slot, session.name)
+            target = self._focus_parent_session
+            args = (slot, session)
+        # UI Automation and navigation are off-thread so the serial/LED path is
+        # never blocked by a Tauri tree walk or app transition.
         threading.Thread(
-            target=self._await_navigation,
-            args=(slot, session),
+            target=target,
+            args=args,
             name="macropad-nav",
             daemon=True,
         ).start()
+
+    def _focus_parent_session(self, slot: int, session) -> None:
+        # InvokePattern is semantic rather than coordinate-backed, so exact
+        # parent selection can happen while the pad's Win+<n> focus chord is
+        # still bringing the app forward.
+        selected = actions.focus_pinned_session(
+            session.workspace_id, session.session_id
+        )
+        if not selected:
+            # Exact and safe, but slower because the URI handler routes through
+            # github.exe. This is the failure path, not a positional shortcut.
+            actions.focus_session(session.session_id or "")
+        self._await_navigation(slot, session)
 
     def _await_navigation(self, slot: int, session) -> None:
         """Clear the pad's busy pulse once the app has actually navigated.
@@ -353,6 +369,9 @@ class Daemon:
             log.exception("database reconcile failed")
             return
         self.store.apply_snapshot(sessions)
+        actions.warm_session_controls(
+            (session.workspace_id, session.session_id) for session in sessions
+        )
         self._push_states()
 
     # -- lifecycle -------------------------------------------------------
