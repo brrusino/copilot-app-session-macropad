@@ -373,11 +373,18 @@ class Daemon:
             len(self._sections),
         )
         self.store.apply_snapshot(section.sessions)
-        actions.warm_session_controls(
-            (s.workspace_id, s.session_id) for s in section.sessions
-        )
         self._push_states()
         self._push_section_leds()
+        # The LEDs are the feedback for the tap, so they go first. Re-caching
+        # the sidebar rows for the new section is a full tree walk (seconds),
+        # so it runs off-thread like the navigation path does.
+        targets = [(s.workspace_id, s.session_id) for s in section.sessions]
+        threading.Thread(
+            target=actions.warm_session_controls,
+            args=(targets,),
+            name="macropad-warm",
+            daemon=True,
+        ).start()
 
     def _section_indicator_state(self) -> str:
         """LED state name for the section-indicator key (``section_down``,
