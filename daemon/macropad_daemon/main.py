@@ -365,6 +365,18 @@ class Daemon:
         if not (0 <= new_index < len(self._sections)):
             return
         self._section_index = new_index
+        # Re-read rather than reuse the last reconcile's snapshot: that copy
+        # can be seconds old, and re-applying it resurrected child questions
+        # and unread flags that had since cleared -- a burst of orange and
+        # green on every switch back to "Pinned" until the next reconcile.
+        try:
+            self._sections = self.db.sections(self.cfg.slot_count)
+        except Exception:
+            log.exception("database read failed on section change")
+        if not self._sections:
+            self._section_index = 0
+            return
+        self._section_index = min(self._section_index, len(self._sections) - 1)
         section = self._sections[self._section_index]
         log.info(
             "section -> %s (%s/%s)",

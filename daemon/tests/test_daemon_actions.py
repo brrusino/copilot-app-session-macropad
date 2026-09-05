@@ -407,6 +407,28 @@ def test_section_up_and_down_actions_change_section(daemon):
     assert daemon._section_index == 0
 
 
+def test_section_change_rereads_the_database(daemon, monkeypatch):
+    """Switching sections must not re-apply the last reconcile's snapshot:
+    stale child questions and unread flags flashed orange/green on every
+    switch back to Pinned until the next reconcile corrected them."""
+    stale = [
+        Section(name="Pinned", sessions=(session(0, asking=True, asking_at=1.0),)),
+        Section(name="Group A", sessions=()),
+    ]
+    fresh = [
+        Section(name="Pinned", sessions=(session(0, is_running=True),)),
+        Section(name="Group A", sessions=()),
+    ]
+    daemon._sections = stale
+    daemon._section_index = 1
+    monkeypatch.setattr(daemon.db, "sections", lambda slot_count: fresh)
+
+    daemon._run_action("section_up")
+
+    assert daemon._sections is fresh
+    assert daemon.store.slot_states()[0] == "working"
+
+
 def test_status_reports_the_current_section_and_key_colours(tmp_path, capsys):
     """--status must show the same section info the LEDs would, since that's
     what it exists for when there is no pad plugged in to read."""
