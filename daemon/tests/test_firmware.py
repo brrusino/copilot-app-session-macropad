@@ -494,7 +494,7 @@ def test_action_states_sets_state_by_action_name(firmware):
     import config as fw_config
 
     key = fw_config.ROWS[2][0]
-    firmware._handle_message({"t": "action_states", "v": {"section_down": "unread"}})
+    firmware._handle_message({"t": "action_states", "v": {"section_up": "unread"}})
     colour, effect = fw_config.PALETTE["unread"]  # "solid", so exact colour is stable
     scaled = tuple(int(c * fw_config.BRIGHTNESS) for c in colour)
     assert firmware._action_key_state[key] == "unread"
@@ -509,7 +509,7 @@ def test_action_states_unknown_action_name_is_ignored(firmware):
 def test_action_states_unknown_state_name_is_ignored(firmware):
     import config as fw_config
 
-    firmware._handle_message({"t": "action_states", "v": {"section_down": "not_a_real_state"}})
+    firmware._handle_message({"t": "action_states", "v": {"section_up": "not_a_real_state"}})
     assert fw_config.ROWS[2][0] not in firmware._action_key_state
 
 
@@ -528,7 +528,7 @@ def test_action_flash_still_takes_priority_over_action_states(firmware):
     import config as fw_config
 
     key = fw_config.ROWS[2][0]
-    firmware._handle_message({"t": "action_states", "v": {"section_down": "working"}})
+    firmware._handle_message({"t": "action_states", "v": {"section_up": "working"}})
     firmware._on_down(key, 0.0)
     colour, effect = fw_config.PALETTE["action_active"]
     scaled = tuple(int(c * fw_config.BRIGHTNESS) for c in colour)
@@ -722,8 +722,8 @@ def test_row_three_keys_one_and_two_are_section_nav_actions(firmware):
     become the host-driven section navigation actions instead."""
     import config as fw_config
 
-    assert fw_config.ACTION_KEYS[fw_config.ROWS[2][0]] == "section_down"
-    assert fw_config.ACTION_KEYS[fw_config.ROWS[2][1]] == "section_up"
+    assert fw_config.ACTION_KEYS[fw_config.ROWS[2][0]] == "section_up"
+    assert fw_config.ACTION_KEYS[fw_config.ROWS[2][1]] == "section_down"
     assert fw_config.ROWS[2][1] not in fw_config.TYPING_KEYS
 
 

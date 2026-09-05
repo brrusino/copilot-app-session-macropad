@@ -50,7 +50,7 @@ NAVIGATION_TIMEOUT = 3.0
 #: Pad protocol version this daemon needs. Bumped alongside
 #: ``FIRMWARE_VERSION`` in keybow/code.py whenever the daemon starts relying on
 #: a message an older pad would silently ignore.
-REQUIRED_FIRMWARE = 5
+REQUIRED_FIRMWARE = 6
 
 
 class Daemon:
@@ -387,7 +387,7 @@ class Daemon:
         ).start()
 
     def _section_indicator_state(self) -> str:
-        """LED state name for the section-indicator key (``section_down``,
+        """LED state name for the section-indicator key (``section_up``,
         physical row 3 key 1).
 
         Section 0 ("Pinned") is the plain resting colour; every group section
@@ -400,7 +400,7 @@ class Daemon:
         return section_indicator_state(self._sections, self._section_index, self.cfg.section_colors)
 
     def _elsewhere_attention_state(self) -> str:
-        """LED state name for the elsewhere-needs-you key (``section_up``,
+        """LED state name for the elsewhere-needs-you key (``section_down``,
         physical row 3 key 2).
 
         Rolled-up attention pooled across every section OTHER than the one
@@ -433,8 +433,8 @@ class Daemon:
         physical layout.
         """
         states = {
-            "section_down": self._section_indicator_state(),
-            "section_up": self._elsewhere_attention_state(),
+            "section_up": self._section_indicator_state(),
+            "section_down": self._elsewhere_attention_state(),
         }
         if states == self._last_section_states:
             return
@@ -600,8 +600,8 @@ def _print_status(cfg: config_module.Config) -> int:
         print("section  : (none)")
     indicator = section_indicator_state(sections, section_index, cfg.section_colors)
     elsewhere = elsewhere_attention_state(sections, section_index)
-    print(f"  key A (section_down) {indicator:<18} {STATE_COLOURS.get(indicator, indicator)}")
-    print(f"  key B (section_up)   {elsewhere:<18} {STATE_COLOURS.get(elsewhere, elsewhere)}")
+    print(f"  key A (section_up)   {indicator:<18} {STATE_COLOURS.get(indicator, indicator)}")
+    print(f"  key B (section_down) {elsewhere:<18} {STATE_COLOURS.get(elsewhere, elsewhere)}")
     print()
     for slot in range(cfg.slot_count):
         session = store.session_for_slot(slot)

@@ -581,34 +581,34 @@ for why some setups have no transport available, and what to do about it.
 
 | key | keys sent |
 |---|---|
-| section down | *(nothing typed — daemon moves rows 1-2 to the next section)* |
-| section down, held | *(nothing typed — steps the LED brightness)* |
 | section up | *(nothing typed — daemon moves rows 1-2 to the previous section)* |
+| section up, held | *(nothing typed — steps the LED brightness)* |
+| section down | *(nothing typed — daemon moves rows 1-2 to the next section)* |
 | cycle mode | `Shift+Tab` |
 | compact | `/compact` + `Enter` |
 | clear | `Ctrl+A`, `Delete` |
 | enter | `Enter` |
 
-**Two of the six are daemon actions, not chords.** Section down/up need state
+**Two of the six are daemon actions, not chords.** Section up/down need state
 the pad cannot see — which sections exist, and which one rows 1-2 are
 currently showing — so the pad reports the press and the daemon does the
 rest. The other four are typed by the pad itself, like dictation: fixed
 chords with no session logic, so routing them through the daemon would only
 add latency and a dependency on it being up.
 
-**Section down/up move rows 1-2 through your sections.** See
+**Section up/down move rows 1-2 through your sections.** See
 [Sections and groups](#sections-and-groups) below. Sections don't wrap: at
 either end, the boundary key is just a no-op.
 
-**Section down's LED names the section you're on**, not attention: "Pinned"
+**Section up's LED names the section you're on**, not attention: "Pinned"
 uses the plain resting colour, and every group after it gets its own solid
 colour (`section_colors` in `macropad.toml`), cycling if you have more groups
-than configured colours. **Section up's LED rolls up attention from every
+than configured colours. **Section down's LED rolls up attention from every
 *other* section** — asking beats working beats unread, same priority as a
 session key — so you know something needs you elsewhere before you go
 looking for it.
 
-**Hold section down to change brightness.** The pad sits on a desk, and a desk
+**Hold section up to change brightness.** The pad sits on a desk, and a desk
 is a different room at 9am than it is at 11pm — the level that reads well at
 night is invisible in daylight. Holding the key for 0.6s steps through
 `BRIGHTNESS_LEVELS`, wrapping at the top; the level changes while you're still
@@ -682,7 +682,7 @@ explicit group, in the sidebar's own order, each showing that group's members
 in the order you arranged them. A group with nothing eligible to show (every
 member archived or a child) just doesn't get a section.
 
-Section down/up (row 3 keys 1-2) step between sections; see
+Section up/down (row 3 keys 1-2) step between sections; see
 [What rows 3 and 4 do](#what-rows-3-and-4-do) for the keys and their LEDs.
 Stepping into a group whose sidebar row is collapsed expands it first, then
 clicks the exact member row — it never re-collapses the group behind you.

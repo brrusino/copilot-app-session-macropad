@@ -253,8 +253,8 @@ def test_no_levels_configured_pushes_nothing(daemon, monkeypatch):
 
 
 # --- sections: navigation, colours, and the two section-nav LEDs -----------
-# Row 3 key 1 ("section_down") steps forward and names the section on screen;
-# row 3 key 2 ("section_up") steps back and rolls up attention from every
+# Row 3 key 1 ("section_up") steps back and names the section on screen;
+# row 3 key 2 ("section_down") steps forward and rolls up attention from every
 # OTHER section. Neither wraps at a boundary.
 
 
@@ -337,7 +337,7 @@ def test_section_nav_leds_are_pushed_by_action_name(daemon):
 
     daemon._push_section_leds()
 
-    assert {"t": "action_states", "v": {"section_down": "action", "section_up": "unread"}} in (
+    assert {"t": "action_states", "v": {"section_up": "action", "section_down": "unread"}} in (
         daemon.link.sent
     )
 

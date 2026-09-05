@@ -45,8 +45,8 @@ SESSION_KEYS = ROWS[0] + ROWS[1]
 # cannot see. The other two are fixed chords it types itself. The first also
 # doubles as the brightness key when held -- see BRIGHTNESS_KEY.
 ACTION_KEYS = {
-    ROWS[2][0]: "section_down",
-    ROWS[2][1]: "section_up",
+    ROWS[2][0]: "section_up",
+    ROWS[2][1]: "section_down",
 }
 
 # Dictation: two adjacent bottom-row keys driving ONE push-to-talk chord.

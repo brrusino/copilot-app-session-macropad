@@ -46,10 +46,11 @@ import config
 #: 3 - `levels` (host sets the brightness levels the pad cycles through)
 #: 4 - session keys stop typing positional shortcuts; the daemon selects the
 #:     exact top-level parent by workspace id
-#: 5 - row 3 keys 1-2 become section_down/section_up; `action_states`
+#: 5 - row 3 keys 1-2 become section-nav keys; `action_states`
 #:     (host sets the two section-nav keys' LED state by action name, since
 #:     the host never has its own copy of the physical key map)
-FIRMWARE_VERSION = 5
+#: 6 - row 3 key 1 is section_up (previous), key 2 is section_down (next)
+FIRMWARE_VERSION = 6
 SLOT_COUNT = len(config.SESSION_KEYS)
 
 keybow = PMK(Hardware())
@@ -338,7 +339,7 @@ def _cycle_brightness():
 # Semantic state per session slot.
 _slot_state = ["empty"] * SLOT_COUNT
 
-#: action name -> physical key number, e.g. "section_down" -> ROWS[2][0].
+#: action name -> physical key number, e.g. "section_up" -> ROWS[2][0].
 #:
 #: Built once from config.ACTION_KEYS so the host can drive these keys'
 #: LEDs by the same action name it already sends key presses tagged with --
