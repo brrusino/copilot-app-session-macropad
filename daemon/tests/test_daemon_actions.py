@@ -16,7 +16,7 @@ import pytest
 
 from macropad_daemon import config as config_module
 from macropad_daemon import main as main_module
-from macropad_daemon.copilot_db import PinnedSession
+from macropad_daemon.copilot_db import PinnedSession, Section
 
 
 class FakeLink:
@@ -28,8 +28,9 @@ class FakeLink:
     def set_on_connect(self, callback) -> None:
         self._on_connect = callback
 
-    def send(self, message: dict) -> None:
+    def send(self, message: dict) -> bool:
         self.sent.append(message)
+        return True
 
 
 @pytest.fixture
@@ -97,7 +98,10 @@ def test_session_key_clicks_the_exact_parent_workspace(daemon, monkeypatch):
     monkeypatch.setattr(
         main_module.actions,
         "focus_pinned_session",
-        lambda workspace_id, session_id: selected.append((workspace_id, session_id)) or True,
+        lambda workspace_id, session_id, collapsed_group=None: selected.append(
+            (workspace_id, session_id)
+        )
+        or True,
     )
     monkeypatch.setattr(daemon, "_await_navigation", lambda slot, item: None)
 
@@ -111,7 +115,7 @@ def test_exact_parent_click_falls_back_to_the_session_deep_link(daemon, monkeypa
     deep_links = []
     monkeypatch.setattr(main_module.actions, "app_is_foreground", lambda: True)
     monkeypatch.setattr(
-        main_module.actions, "focus_pinned_session", lambda *_args: False
+        main_module.actions, "focus_pinned_session", lambda *_args, **_kwargs: False
     )
     monkeypatch.setattr(
         main_module.actions,
@@ -246,3 +250,188 @@ def test_no_levels_configured_pushes_nothing(daemon, monkeypatch):
     daemon._on_pad_connect()
 
     assert not [m for m in daemon.link.sent if m.get("t") == "levels"]
+
+
+# --- sections: navigation, colours, and the two section-nav LEDs -----------
+# Row 3 key 1 ("section_down") steps forward and names the section on screen;
+# row 3 key 2 ("section_up") steps back and rolls up attention from every
+# OTHER section. Neither wraps at a boundary.
+
+
+def test_section_indicator_is_the_resting_colour_on_pinned(daemon):
+    daemon._sections = [Section(name="Pinned", sessions=())]
+    daemon._section_index = 0
+    assert daemon._section_indicator_state() == "action"
+
+
+def test_section_indicator_is_a_distinct_colour_per_group(daemon):
+    daemon._sections = [
+        Section(name="Pinned", sessions=()),
+        Section(name="Group A", sessions=()),
+        Section(name="Group B", sessions=()),
+    ]
+
+    daemon._section_index = 1
+    assert daemon._section_indicator_state() == "section_color_0"
+    daemon._section_index = 2
+    assert daemon._section_indicator_state() == "section_color_1"
+
+
+def test_section_indicator_cycles_when_more_groups_than_colours(daemon):
+    daemon.cfg.section_colors = [(1, 2, 3), (4, 5, 6)]
+    daemon._sections = [
+        Section(name="Pinned", sessions=()),
+        Section(name="A", sessions=()),
+        Section(name="B", sessions=()),
+        Section(name="C", sessions=()),
+    ]
+
+    daemon._section_index = 3  # group index 2, wraps to colour 0
+    assert daemon._section_indicator_state() == "section_color_0"
+
+
+def test_section_indicator_falls_back_with_no_configured_colours(daemon):
+    daemon.cfg.section_colors = []
+    daemon._sections = [Section(name="Pinned", sessions=()), Section(name="A", sessions=())]
+    daemon._section_index = 1
+    assert daemon._section_indicator_state() == "action"
+
+
+def test_elsewhere_attention_is_resting_colour_with_only_one_section(daemon):
+    daemon._sections = [Section(name="Pinned", sessions=(session(0),))]
+    daemon._section_index = 0
+    assert daemon._elsewhere_attention_state() == "action"
+
+
+def test_elsewhere_attention_pools_every_other_section_both_directions(daemon):
+    """A group needing you could sit on either side of the current section,
+    not just the one already-visited direction."""
+    daemon._sections = [
+        Section(name="Pinned", sessions=(session(0),)),
+        Section(name="Above", sessions=(session(1, unread=True),)),
+        Section(name="Current", sessions=(session(2),)),
+        Section(name="Below", sessions=(session(3, asking=True, asking_at=1.0),)),
+    ]
+    daemon._section_index = 2
+
+    assert daemon._elsewhere_attention_state() == "needs_approval"
+
+
+def test_elsewhere_attention_ignores_the_current_section(daemon):
+    """Attention already on screen is not 'elsewhere'."""
+    daemon._sections = [
+        Section(name="Pinned", sessions=(session(0, asking=True, asking_at=1.0),)),
+        Section(name="Other", sessions=(session(1),)),
+    ]
+    daemon._section_index = 0
+
+    assert daemon._elsewhere_attention_state() == "action"
+
+
+def test_section_nav_leds_are_pushed_by_action_name(daemon):
+    daemon._sections = [
+        Section(name="Pinned", sessions=()),
+        Section(name="Group A", sessions=(session(0, unread=True),)),
+    ]
+    daemon._section_index = 0
+
+    daemon._push_section_leds()
+
+    assert {"t": "action_states", "v": {"section_down": "action", "section_up": "unread"}} in (
+        daemon.link.sent
+    )
+
+
+def test_section_nav_leds_are_not_resent_unchanged(daemon):
+    daemon._sections = [Section(name="Pinned", sessions=())]
+    daemon._section_index = 0
+
+    daemon._push_section_leds()
+    daemon.link.sent.clear()
+    daemon._push_section_leds()
+
+    assert daemon.link.sent == []
+
+
+def test_section_colours_are_registered_on_connect(daemon, monkeypatch):
+    monkeypatch.setattr(main_module.actions, "app_is_foreground", lambda: True)
+    daemon.cfg.section_colors = [(1, 2, 3), (4, 5, 6)]
+
+    daemon._on_pad_connect()
+
+    palette_messages = [m for m in daemon.link.sent if m.get("t") == "palette"]
+    assert palette_messages
+    sent_palette = palette_messages[0]["v"]
+    assert sent_palette["section_color_0"] == [[1, 2, 3], "solid"]
+    assert sent_palette["section_color_1"] == [[4, 5, 6], "solid"]
+
+
+def test_change_section_steps_forward_and_back(daemon):
+    daemon._sections = [
+        Section(name="Pinned", sessions=(session(0),)),
+        Section(name="Group A", sessions=(session(1),)),
+    ]
+    daemon._section_index = 0
+
+    daemon._change_section(1)
+    assert daemon._section_index == 1
+    assert daemon.store.session_for_slot(0).name == "session 1"
+
+    daemon._change_section(-1)
+    assert daemon._section_index == 0
+    assert daemon.store.session_for_slot(0).name == "session 0"
+
+
+def test_change_section_does_not_wrap_past_either_end(daemon):
+    daemon._sections = [Section(name="Pinned", sessions=(session(0),))]
+    daemon._section_index = 0
+
+    daemon._change_section(-1)
+    assert daemon._section_index == 0
+
+    daemon._change_section(1)
+    assert daemon._section_index == 0
+
+
+def test_section_up_and_down_actions_change_section(daemon):
+    daemon._sections = [
+        Section(name="Pinned", sessions=()),
+        Section(name="Group A", sessions=()),
+    ]
+    daemon._section_index = 0
+
+    daemon._run_action("section_down")
+    assert daemon._section_index == 1
+
+    daemon._run_action("section_up")
+    assert daemon._section_index == 0
+
+
+def test_status_reports_the_current_section_and_key_colours(tmp_path, capsys):
+    """--status must show the same section info the LEDs would, since that's
+    what it exists for when there is no pad plugged in to read."""
+    import pathlib
+    import sys
+
+    sys.path.insert(0, str(pathlib.Path(__file__).parent))
+    from test_copilot_db import build_db
+
+    build_db(
+        tmp_path,
+        pins=["ws-1"],
+        workspaces=[
+            ("ws-1", "First", "s-1", None),
+            ("ws-2", "Grouped", "s-2", None),
+        ],
+        sessions=[("s-1", "a", 0, 0, None), ("s-2", "b", 0, 0, None)],
+        groups=[{"id": "g-1", "name": "Touchstone Pilots", "members": ["ws-2"]}],
+    )
+    cfg = config_module.Config(copilot_home=tmp_path)
+
+    result = main_module._print_status(cfg)
+
+    out = capsys.readouterr().out
+    assert result == 0
+    assert "section  : Pinned (1/2)" in out
+    assert "section_down" in out
+    assert "section_up" in out

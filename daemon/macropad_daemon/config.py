@@ -29,6 +29,20 @@ DEFAULT_BRIDGE_PORT = 7831
 
 DEFAULT_SLOT_COUNT = 8
 
+#: Default colours for the section-indicator key (row 3 key 1), one per group
+#: section beyond "Pinned" (which uses the plain resting colour), cycled if
+#: there are more groups than colours. Chosen to read clearly on a backlit
+#: glyph keycap and be distinguishable from each other and from "action"'s
+#: purple: teal, orange, magenta, yellow, sky blue, lime.
+DEFAULT_SECTION_COLORS = [
+    (0, 220, 200),
+    (255, 140, 0),
+    (230, 0, 200),
+    (230, 210, 0),
+    (60, 170, 255),
+    (150, 230, 0),
+]
+
 #: How often to re-read the database. Hooks carry fast transitions, so this only
 #: needs to be quick enough to catch things hooks cannot see (you reading a
 #: session, re-pinning). Tune against measured app write latency; it is a
@@ -87,6 +101,11 @@ class Config:
     #: Pushed on connect so they can be retuned without reflashing the pad.
     brightness_levels: list[float] = field(default_factory=list)
     palette: dict[str, list] = field(default_factory=dict)
+    #: Solid colours for the section-indicator key, by group index. See
+    #: DEFAULT_SECTION_COLORS.
+    section_colors: list[tuple[int, int, int]] = field(
+        default_factory=lambda: list(DEFAULT_SECTION_COLORS)
+    )
     log_level: str = "INFO"
 
     @property
@@ -172,6 +191,9 @@ def load(path: Path | None = None) -> Config:
     palette = leds.get("palette", {})
     if isinstance(palette, dict):
         cfg.palette = palette
+    section_colors = leds.get("section_colors")
+    if isinstance(section_colors, (list, tuple)) and section_colors:
+        cfg.section_colors = [tuple(int(c) for c in colour) for colour in section_colors]
 
     daemon = data.get("daemon", {})
     cfg.slot_count = int(daemon.get("slot_count", cfg.slot_count))

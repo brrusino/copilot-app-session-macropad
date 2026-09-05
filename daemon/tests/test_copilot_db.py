@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from macropad_daemon.copilot_db import PINS_KEY, UNREAD_KEY, CopilotDB
+from macropad_daemon.copilot_db import GROUPS_KEY, PINS_KEY, UNREAD_KEY, CopilotDB
 
 SCHEMA = """
 CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT);
@@ -26,7 +26,9 @@ CREATE TABLE workspaces (
     name TEXT,
     session_id TEXT,
     archived_at TEXT,
-    updated_at TEXT
+    updated_at TEXT,
+    creator_session_id TEXT,
+    coordinating_creator_session_id TEXT
 );
 CREATE TABLE workspace_parent_links (
     child_workspace_id TEXT,
@@ -57,12 +59,18 @@ def build_db(
     children=(),
     sort_mode=None,
     activity=(),
+    groups=None,
+    collapsed_group_ids=(),
 ):
     """Build a fixture database.
 
-    ``workspaces`` rows are ``(id, name, session_id, archived_at)`` with an
-    optional 5th ``updated_at`` element. ``activity`` rows are
-    ``(session_id, activity_type, created_at)``.
+    ``workspaces`` rows are ``(id, name, session_id, archived_at)`` with
+    optional 5th (``updated_at``), 6th (``creator_session_id``) and 7th
+    (``coordinating_creator_session_id``) elements. ``activity`` rows are
+    ``(session_id, activity_type, created_at)``. ``groups`` is a list of
+    ``{"id", "name", "members"}`` dicts (``members`` a plain list of ids,
+    wrapped into ``{"kind": "workspace", "id": ...}`` here to match the app's
+    real shape).
     """
     path = tmp_path / "data.db"
     conn = sqlite3.connect(path)
@@ -71,6 +79,8 @@ def build_db(
     state = {"pinnedWorkspaceIds": pins}
     if sort_mode is not None:
         state["workspaceSortMode"] = sort_mode
+    if collapsed_group_ids:
+        state["collapsedExplicitGroupIds"] = list(collapsed_group_ids)
     conn.execute(
         "INSERT INTO app_state (key, value) VALUES (?, ?)",
         (PINS_KEY, json.dumps({"state": state, "version": 1})),
@@ -79,10 +89,24 @@ def build_db(
         "INSERT INTO app_state (key, value) VALUES (?, ?)",
         (UNREAD_KEY, json.dumps(list(unread))),
     )
-    padded = [row if len(row) == 5 else (*row, None) for row in workspaces]
+    if groups is not None:
+        wrapped_groups = [
+            {
+                "id": g["id"],
+                "name": g["name"],
+                "members": [{"kind": "workspace", "id": m} for m in g["members"]],
+            }
+            for g in groups
+        ]
+        conn.execute(
+            "INSERT INTO app_state (key, value) VALUES (?, ?)",
+            (GROUPS_KEY, json.dumps({"state": {"groups": wrapped_groups}})),
+        )
+    padded = [row + (None,) * (7 - len(row)) for row in workspaces]
     conn.executemany(
-        "INSERT INTO workspaces (id, name, session_id, archived_at, updated_at)"
-        " VALUES (?,?,?,?,?)",
+        "INSERT INTO workspaces (id, name, session_id, archived_at, updated_at,"
+        " creator_session_id, coordinating_creator_session_id)"
+        " VALUES (?,?,?,?,?,?,?)",
         padded,
     )
     conn.executemany(
@@ -544,3 +568,242 @@ def test_plan_ready_counts_as_asking(tmp_path):
         activity=[("s-1", "agent_plan_ready", "2026-01-01T01:00:00Z")],
     )
     assert db.pinned_sessions(4)[0].asking is True
+
+
+# --- explicit groups / sections --------------------------------------------
+# A pin belonging to an explicit group is rendered under the group instead of
+# "Pinned"; the pad mirrors that with one section per group.
+
+
+def test_grouped_pin_is_removed_from_pinned_section(tmp_path):
+    db = build_db(
+        tmp_path,
+        pins=["ws-1", "ws-2", "ws-3"],
+        workspaces=[
+            ("ws-1", "First", "s-1", None),
+            ("ws-2", "Grouped", "s-2", None),
+            ("ws-3", "Third", "s-3", None),
+        ],
+        sessions=[
+            ("s-1", "a", 0, 0, None),
+            ("s-2", "b", 0, 0, None),
+            ("s-3", "c", 0, 0, None),
+        ],
+        groups=[{"id": "g-1", "name": "Touchstone Pilots", "members": ["ws-2"]}],
+    )
+    rows = db.pinned_sessions(8)
+    assert [r.workspace_id for r in rows] == ["ws-1", "ws-3"]
+
+
+def test_sections_lists_pinned_then_one_per_group(tmp_path):
+    db = build_db(
+        tmp_path,
+        pins=["ws-1", "ws-2", "ws-3"],
+        workspaces=[
+            ("ws-1", "First", "s-1", None),
+            ("ws-2", "Grouped", "s-2", None),
+            ("ws-3", "Third", "s-3", None),
+        ],
+        sessions=[
+            ("s-1", "a", 0, 0, None),
+            ("s-2", "b", 0, 0, None),
+            ("s-3", "c", 0, 0, None),
+        ],
+        groups=[{"id": "g-1", "name": "Touchstone Pilots", "members": ["ws-2"]}],
+    )
+    sections = db.sections(8)
+    assert [s.name for s in sections] == ["Pinned", "Touchstone Pilots"]
+    assert [r.workspace_id for r in sections[0].sessions] == ["ws-1", "ws-3"]
+    assert [r.workspace_id for r in sections[1].sessions] == ["ws-2"]
+    # Group sections renumber slots from 0 too, same as Pinned.
+    assert sections[1].sessions[0].slot == 0
+
+
+def test_group_members_keep_member_order_not_pin_order(tmp_path):
+    """A group's own member order governs its section, not the pin list."""
+    db = build_db(
+        tmp_path,
+        pins=["ws-1", "ws-2"],
+        workspaces=[
+            ("ws-1", "First", "s-1", None),
+            ("ws-2", "Second", "s-2", None),
+        ],
+        sessions=[("s-1", "a", 0, 0, None), ("s-2", "b", 0, 0, None)],
+        groups=[{"id": "g-1", "name": "A Group", "members": ["ws-2", "ws-1"]}],
+    )
+    sections = db.sections(8)
+    assert [r.workspace_id for r in sections[1].sessions] == ["ws-2", "ws-1"]
+
+
+def test_group_with_zero_eligible_members_is_omitted(tmp_path):
+    """An all-archived (or all-child) group has no key to show, so no section."""
+    db = build_db(
+        tmp_path,
+        pins=["ws-1", "ws-2"],
+        workspaces=[
+            ("ws-1", "First", "s-1", None),
+            ("ws-2", "Archived", "s-2", "2026-01-01T00:00:00Z"),
+        ],
+        sessions=[("s-1", "a", 0, 0, None), ("s-2", "b", 0, 0, None)],
+        groups=[{"id": "g-1", "name": "Empty Group", "members": ["ws-2"]}],
+    )
+    sections = db.sections(8)
+    assert [s.name for s in sections] == ["Pinned"]
+
+
+def test_pinned_section_present_even_when_empty(tmp_path):
+    """Section 0 is always "Pinned", even if every pin was claimed by a group."""
+    db = build_db(
+        tmp_path,
+        pins=["ws-1"],
+        workspaces=[("ws-1", "First", "s-1", None)],
+        sessions=[("s-1", "a", 0, 0, None)],
+        groups=[{"id": "g-1", "name": "Everything", "members": ["ws-1"]}],
+    )
+    sections = db.sections(8)
+    assert [s.name for s in sections] == ["Pinned", "Everything"]
+    assert sections[0].sessions == ()
+
+
+def test_grouped_member_ids(tmp_path):
+    db = build_db(
+        tmp_path,
+        pins=["ws-1"],
+        workspaces=[("ws-1", "First", "s-1", None)],
+        sessions=[("s-1", "a", 0, 0, None)],
+        groups=[
+            {"id": "g-1", "name": "A", "members": ["ws-1", "ws-2"]},
+            {"id": "g-2", "name": "B", "members": ["ws-3"]},
+        ],
+    )
+    with db._connect() as conn:
+        assert db.grouped_member_ids(conn) == {"ws-1", "ws-2", "ws-3"}
+
+
+def test_collapsed_group_for_reports_name_only_when_collapsed(tmp_path):
+    db = build_db(
+        tmp_path,
+        pins=["ws-1", "ws-2"],
+        workspaces=[
+            ("ws-1", "First", "s-1", None),
+            ("ws-2", "Second", "s-2", None),
+        ],
+        sessions=[("s-1", "a", 0, 0, None), ("s-2", "b", 0, 0, None)],
+        groups=[
+            {"id": "g-1", "name": "Collapsed Group", "members": ["ws-1"]},
+            {"id": "g-2", "name": "Expanded Group", "members": ["ws-2"]},
+        ],
+        collapsed_group_ids=["g-1"],
+    )
+    assert db.collapsed_group_for("ws-1") == "Collapsed Group"
+    assert db.collapsed_group_for("ws-2") is None
+    assert db.collapsed_group_for("ws-nonmember") is None
+
+
+# --- creator_session_id child detection ------------------------------------
+# An agent-spawned child can be linked purely by workspaces.creator_session_id
+# (or coordinating_creator_session_id) naming the parent's session id, with no
+# row in workspace_parent_links at all.
+
+
+def test_creator_session_id_marks_a_workspace_as_a_child(tmp_path):
+    db = build_db(
+        tmp_path,
+        pins=["ws-parent", "ws-kid"],
+        workspaces=[
+            ("ws-parent", "Parent", "s-parent", None),
+            ("ws-kid", "Kid", "s-kid", None, None, "s-parent"),
+        ],
+        sessions=[
+            ("s-parent", "parent", 0, 0, None),
+            ("s-kid", "kid", 1, 0, None),
+        ],
+    )
+    rows = db.pinned_sessions(8)
+    assert [r.workspace_id for r in rows] == ["ws-parent"]
+
+
+def test_coordinating_creator_session_id_also_marks_a_child(tmp_path):
+    db = build_db(
+        tmp_path,
+        pins=["ws-parent", "ws-kid"],
+        workspaces=[
+            ("ws-parent", "Parent", "s-parent", None),
+            ("ws-kid", "Kid", "s-kid", None, None, None, "s-parent"),
+        ],
+        sessions=[
+            ("s-parent", "parent", 0, 0, None),
+            ("s-kid", "kid", 1, 0, None),
+        ],
+    )
+    rows = db.pinned_sessions(8)
+    assert [r.workspace_id for r in rows] == ["ws-parent"]
+
+
+def test_creator_session_child_work_rolls_up_to_the_parent(tmp_path):
+    """The same work rollup that workspace_parent_links gets must apply here."""
+    db = build_db(
+        tmp_path,
+        pins=["ws-parent"],
+        workspaces=[
+            ("ws-parent", "Parent", "s-parent", None),
+            ("ws-kid", "Kid", "s-kid", None, None, "s-parent"),
+        ],
+        sessions=[
+            ("s-parent", "parent", 0, 0, None),
+            ("s-kid", "kid", 1, 0, None),
+        ],
+    )
+    assert db.pinned_sessions(8)[0].is_running is True
+
+
+def test_creator_session_id_naming_a_pinned_chat_session_is_a_child(tmp_path):
+    """The parent can be a standalone pinned chat session, not a workspace."""
+    db = build_db(
+        tmp_path,
+        pins=["s-chat", "ws-kid"],
+        workspaces=[("ws-kid", "Kid", "s-kid", None, None, "s-chat")],
+        sessions=[
+            ("s-chat", "chat parent", 0, 0, None),
+            ("s-kid", "kid", 1, 0, None),
+        ],
+    )
+    rows = db.pinned_sessions(8)
+    assert [r.session_id for r in rows] == ["s-chat"]
+
+
+def test_creator_session_child_rollup_reaches_a_pinned_chat_parent(tmp_path):
+    db = build_db(
+        tmp_path,
+        pins=["s-chat"],
+        workspaces=[("ws-kid", "Kid", "s-kid", None, None, "s-chat")],
+        sessions=[
+            ("s-chat", "chat parent", 0, 0, None),
+            ("s-kid", "kid", 1, 0, None),
+        ],
+    )
+    assert db.pinned_sessions(8)[0].is_running is True
+
+
+def test_missing_creator_session_columns_are_tolerated(tmp_path):
+    """An older app schema without these columns must not break slot resolution."""
+    db = build_db(
+        tmp_path,
+        pins=["ws-1"],
+        workspaces=[("ws-1", "First", "s-1", None)],
+        sessions=[("s-1", "a", 0, 0, None)],
+    )
+    conn = sqlite3.connect(db.db_path)
+    conn.execute("ALTER TABLE workspaces RENAME TO workspaces_old")
+    conn.execute(
+        "CREATE TABLE workspaces (id TEXT PRIMARY KEY, name TEXT, session_id TEXT,"
+        " archived_at TEXT, updated_at TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO workspaces (id, name, session_id, archived_at, updated_at)"
+        " SELECT id, name, session_id, archived_at, updated_at FROM workspaces_old"
+    )
+    conn.execute("DROP TABLE workspaces_old")
+    conn.commit()
+    conn.close()
+    assert [r.workspace_id for r in db.pinned_sessions(8)] == ["ws-1"]

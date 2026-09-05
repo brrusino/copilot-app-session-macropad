@@ -581,26 +581,34 @@ for why some setups have no transport available, and what to do about it.
 
 | key | keys sent |
 |---|---|
-| next attention | `Ctrl+<n>` for whichever session wants you |
-| next attention, held | *(nothing typed — steps the LED brightness)* |
-| rubber duck | `/rubber-duck` + `Enter` |
+| section down | *(nothing typed — daemon moves rows 1-2 to the next section)* |
+| section down, held | *(nothing typed — steps the LED brightness)* |
+| section up | *(nothing typed — daemon moves rows 1-2 to the previous section)* |
 | cycle mode | `Shift+Tab` |
 | compact | `/compact` + `Enter` |
 | clear | `Ctrl+A`, `Delete` |
 | enter | `Enter` |
 
-**Seven of the eight are typed by the pad itself**, like dictation: they're
-fixed chords with no session logic, so routing them through the daemon would
-only add latency and a dependency on it being up.
+**Two of the six are daemon actions, not chords.** Section down/up need state
+the pad cannot see — which sections exist, and which one rows 1-2 are
+currently showing — so the pad reports the press and the daemon does the
+rest. The other four are typed by the pad itself, like dictation: fixed
+chords with no session logic, so routing them through the daemon would only
+add latency and a dependency on it being up.
 
-**Next attention is the exception, and the reason row 3 exists.** Rows 1 and 2
-already give random access to all eight pins, so a key that merely *steps*
-through them adds nothing — measured 187 direct session presses against 16
-steps. This one acts on state instead: it goes to whichever session is asking,
-errored or unread, in that order, and repeated presses walk the list. That
-information is what the LEDs show and what nothing else on the pad can reach.
+**Section down/up move rows 1-2 through your sections.** See
+[Sections and groups](#sections-and-groups) below. Sections don't wrap: at
+either end, the boundary key is just a no-op.
 
-**Hold that same key to change brightness.** The pad sits on a desk, and a desk
+**Section down's LED names the section you're on**, not attention: "Pinned"
+uses the plain resting colour, and every group after it gets its own solid
+colour (`section_colors` in `macropad.toml`), cycling if you have more groups
+than configured colours. **Section up's LED rolls up attention from every
+*other* section** — asking beats working beats unread, same priority as a
+session key — so you know something needs you elsewhere before you go
+looking for it.
+
+**Hold section down to change brightness.** The pad sits on a desk, and a desk
 is a different room at 9am than it is at 11pm — the level that reads well at
 night is invisible in daylight. Holding the key for 0.6s steps through
 `BRIGHTNESS_LEVELS`, wrapping at the top; the level changes while you're still
@@ -625,15 +633,6 @@ A level chosen on the pad is kept until it reboots, and outlives a reconnect:
 the daemon pushes its configured brightness on every connect, and the pad
 reconnects on its own several times an hour, so without that a setting would
 silently revert minutes later.
-
-**The rubber-duck key types the app's own command.** An earlier version typed a
-single `/` to open the command palette, which saved exactly one character you
-were already positioned to type — useless. A version after that typed a
-*sentence* asking for a rubber-duck review, which worked but depended on an
-agent reading the wording and deciding what was meant. The app has a
-first-class `/rubber-duck` command (from the `rubber_duck` experiment), so the
-key types that instead and the app dispatches it directly. It appends to
-whatever is already in the composer, so you can write the context first.
 
 **Enter is also how you approve.** There's no separate approve key: it types
 into whatever you're looking at, which is simpler and safer than having the
@@ -669,7 +668,24 @@ Keys 1-8 follow the app's pinned order. The daemon skips archived pins and
 child sessions, so each slot resolves to a top-level parent workspace and both
 the click and LED use that same object. Re-ordering pins re-orders the keys;
 expanding or opening children does not. A child's *work* still lights up its
-parent.
+parent — a child spawned by another session (found either through the app's
+own parent-link table, or purely by matching `creator_session_id` /
+`coordinating_creator_session_id` against another session) rolls its work and
+asking state up to that parent, the same as any other child.
+
+### Sections and groups
+
+If you use the app's sidebar groups, keys 1-8 show one section at a time
+instead of always the same eight pins. Section 0 is "Pinned" — your pinned
+items, minus anything a group has claimed. After that there's one section per
+explicit group, in the sidebar's own order, each showing that group's members
+in the order you arranged them. A group with nothing eligible to show (every
+member archived or a child) just doesn't get a section.
+
+Section down/up (row 3 keys 1-2) step between sections; see
+[What rows 3 and 4 do](#what-rows-3-and-4-do) for the keys and their LEDs.
+Stepping into a group whose sidebar row is collapsed expands it first, then
+clicks the exact member row — it never re-collapses the group behind you.
 
 ## Dictation
 
@@ -848,6 +864,13 @@ Still unverified:
 - **Rows 3 and 4 as a whole**, and raising the app with `Win+7`. Implemented
   and unit-tested, and every shortcut they use is confirmed — but not yet
   exercised on hardware, because they need the firmware reflashing first.
+- **Sections and groups (firmware v5).** Section-down/up navigation, the
+  per-group indicator colours, and the elsewhere-needs-you rollup are
+  implemented and covered by host-side tests against a fixture database, but
+  not yet exercised against a v5-flashed pad. Expanding a collapsed sidebar
+  group via UI Automation was verified live against the running app (see
+  `expand_group` in `daemon/macropad_daemon/actions.py`), independent of the
+  pad itself.
 - **The `interrupted` state.** Implemented and unit-tested, but never seen
   against real data: `was_interrupted` was false on every pinned session and all
   61 descendants when it was checked, so the signal is unconfirmed.

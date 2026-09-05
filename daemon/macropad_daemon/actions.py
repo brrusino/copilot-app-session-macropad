@@ -140,9 +140,18 @@ def warm_session_controls(
 
 
 def focus_pinned_session(
-    workspace_id: str | None, session_id: str | None
+    workspace_id: str | None,
+    session_id: str | None,
+    collapsed_group: str | None = None,
 ) -> bool:
-    """Click the exact parent row identified by the database, never its position."""
+    """Click the exact parent row identified by the database, never its position.
+
+    ``collapsed_group`` is the display name of the sidebar group the target
+    belongs to, when that group is currently collapsed. A collapsed group
+    renders none of its member rows at all, so the row genuinely is not in the
+    tree until the group is expanded -- this is tried only when the plain
+    lookup below has already failed to find it.
+    """
     automation_id = session_automation_id(workspace_id, session_id)
     if not automation_id or not IS_WINDOWS:
         return False
@@ -154,6 +163,9 @@ def focus_pinned_session(
         try:
             if hwnd != _session_controls_window or automation_id not in _session_controls:
                 _refresh_session_controls(hwnd)
+            if automation_id not in _session_controls and collapsed_group:
+                if expand_group(collapsed_group, hwnd=hwnd):
+                    _refresh_session_controls(hwnd)
             control = _session_controls.get(automation_id)
             if control is None:
                 log.warning("session control not found: %s", automation_id)
@@ -168,6 +180,41 @@ def focus_pinned_session(
             _session_controls.pop(automation_id, None)
             log.warning("exact session click failed for %s: %s", automation_id, exc)
             return False
+
+
+def expand_group(group_name: str, hwnd: int | None = None) -> bool:
+    """Expand a collapsed sidebar group by invoking its header button.
+
+    A group header carries no automation id -- only a ``ButtonControl.Name``
+    set to the group's display name -- so this searches by name rather than
+    id. Uses a *targeted* search (``searchFromControl`` + ``searchDepth``)
+    rather than a full ``WalkControl`` of the tree: measured live against the
+    running app, the targeted search found the header in 0.37s versus 1.7-2.0s
+    for a maxDepth=30 full walk, because it can stop as soon as one match is
+    found instead of visiting every node.
+
+    Never collapses a group back -- this only ever expands, on the way to
+    finding a row that would otherwise not exist in the tree at all.
+    """
+    if not group_name or not IS_WINDOWS:
+        return False
+    if hwnd is None:
+        hwnd = app_window()
+    if hwnd is None:
+        return False
+    try:
+        import uiautomation as auto
+
+        root = auto.ControlFromHandle(hwnd)
+        button = auto.ButtonControl(searchFromControl=root, Name=group_name, searchDepth=25)
+        if not button.Exists(0, 0):
+            log.warning("group header not found: %s", group_name)
+            return False
+        invoke = button.GetPattern(auto.PatternId.InvokePattern)
+        return bool(invoke and invoke.Invoke(waitTime=0))
+    except (ImportError, LookupError, OSError, RuntimeError, COMError) as exc:
+        log.warning("could not expand group %s: %s", group_name, exc)
+        return False
 
 
 def session_deep_link(session_id: str) -> str:

@@ -485,6 +485,56 @@ def test_key_events_carry_role_metadata(firmware):
     assert described["action"] == fw_config.ACTION_KEYS[action_key]
 
 
+# --- action_states (section-nav LEDs) --------------------------------------
+# The host never keeps its own copy of the physical key map, so it addresses
+# these two keys by action name rather than by key number.
+
+
+def test_action_states_sets_state_by_action_name(firmware):
+    import config as fw_config
+
+    key = fw_config.ROWS[2][0]
+    firmware._handle_message({"t": "action_states", "v": {"section_down": "unread"}})
+    colour, effect = fw_config.PALETTE["unread"]  # "solid", so exact colour is stable
+    scaled = tuple(int(c * fw_config.BRIGHTNESS) for c in colour)
+    assert firmware._action_key_state[key] == "unread"
+    assert firmware._resolve(key, 0.0, connected=True) == scaled
+
+
+def test_action_states_unknown_action_name_is_ignored(firmware):
+    firmware._handle_message({"t": "action_states", "v": {"bogus_action": "working"}})
+    assert firmware._action_key_state == {}
+
+
+def test_action_states_unknown_state_name_is_ignored(firmware):
+    import config as fw_config
+
+    firmware._handle_message({"t": "action_states", "v": {"section_down": "not_a_real_state"}})
+    assert fw_config.ROWS[2][0] not in firmware._action_key_state
+
+
+def test_action_key_defaults_to_the_resting_action_colour(firmware):
+    """Before the host ever sends action_states, the key still renders."""
+    import config as fw_config
+
+    colour, effect = fw_config.PALETTE["action"]
+    scaled = tuple(int(c * fw_config.BRIGHTNESS) for c in colour)
+    assert firmware._resolve(fw_config.ROWS[2][1], 0.0, connected=True) == scaled
+
+
+def test_action_flash_still_takes_priority_over_action_states(firmware):
+    """The pressed/action_active flash must keep working alongside the new
+    host-driven resting state."""
+    import config as fw_config
+
+    key = fw_config.ROWS[2][0]
+    firmware._handle_message({"t": "action_states", "v": {"section_down": "working"}})
+    firmware._on_down(key, 0.0)
+    colour, effect = fw_config.PALETTE["action_active"]
+    scaled = tuple(int(c * fw_config.BRIGHTNESS) for c in colour)
+    assert firmware._resolve(key, 0.0, connected=True) == scaled
+
+
 # --- parent-session selection ----------------------------------------------
 # Positional Ctrl+<n> counts expanded child sessions, while LED slots exclude
 # them. The pad sends the slot to the daemon, which clicks the exact parent row.
@@ -667,24 +717,21 @@ def test_a_pad_with_no_daemon_assumes_the_app_is_focused(firmware):
     press, which toggles -- it would minimise the app as often as raise it."""
     assert firmware._app_focused is True
 
-def test_the_rubber_duck_key_types_the_command(firmware):
-    """The app has a first-class /rubber-duck command, so type that rather
-    than a sentence asking for the same thing."""
+def test_row_three_keys_one_and_two_are_section_nav_actions(firmware):
+    """Firmware v5: these keys stop typing/dispatching next_attention and
+    become the host-driven section navigation actions instead."""
     import config as fw_config
 
-    firmware._app_focused = True
-    firmware._on_down(fw_config.ROWS[2][1], 0.0)
-    history = firmware._test_keyboard.history
-    assert history == [("write", "/rubber-duck")]
-    assert firmware._type_queue, "the Enter is held back"
+    assert fw_config.ACTION_KEYS[fw_config.ROWS[2][0]] == "section_down"
+    assert fw_config.ACTION_KEYS[fw_config.ROWS[2][1]] == "section_up"
+    assert fw_config.ROWS[2][1] not in fw_config.TYPING_KEYS
 
 
-def test_the_rubber_duck_binding_is_a_slash_command(firmware):
-    """A sentence would depend on an agent reading the wording and deciding
-    what was meant; a command is dispatched directly."""
+def test_brightness_key_hold_still_works_on_the_section_up_key(firmware):
+    """ROWS[2][0] remains BRIGHTNESS_KEY on hold; only its tap action changed."""
     import config as fw_config
 
-    assert fw_config.RUBBER_DUCK_COMMAND.startswith("/")
+    assert fw_config.BRIGHTNESS_KEY == fw_config.ROWS[2][0]
 
 
 def test_the_mode_key_cycles_with_shift_tab(firmware):
@@ -866,7 +913,7 @@ def test_gain_above_one_brightens_a_backlit_key(firmware):
     somewhere -- it lifts the weaker ones and the key washes toward white."""
     import config as fw_config
 
-    key = fw_config.ROWS[2][1]           # a typing key: (60, 255, 200)
+    key = fw_config.ROWS[2][2]           # a typing key: (60, 255, 200)
     firmware._handle_message({"t": "brightness", "v": 2.0})
     assert firmware._resolve(key, 0.0, connected=True) == (120, 255, 255)
 

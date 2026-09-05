@@ -29,7 +29,7 @@ from . import config as config_module
 from . import actions, hooks_install
 from .copilot_db import CopilotDB
 from .hook_server import PortInUseError
-from .state import StateStore
+from .state import StateStore, section_attention
 
 log = logging.getLogger("macropad")
 
@@ -50,7 +50,7 @@ NAVIGATION_TIMEOUT = 3.0
 #: Pad protocol version this daemon needs. Bumped alongside
 #: ``FIRMWARE_VERSION`` in keybow/code.py whenever the daemon starts relying on
 #: a message an older pad would silently ignore.
-REQUIRED_FIRMWARE = 4
+REQUIRED_FIRMWARE = 5
 
 
 class Daemon:
@@ -75,6 +75,16 @@ class Daemon:
         #: Whether the app was frontmost at the last check, so the pad is only
         #: told when it changes.
         self._app_focused: bool | None = None
+        #: The current sidebar sections ("Pinned", then one per explicit
+        #: group), refreshed every reconcile. Rows 1-2 show whichever section
+        #: ``_section_index`` currently points at.
+        self._sections: list = []
+        #: Index into ``_sections``. Starts at 0 ("Pinned") and is clamped
+        #: whenever the section list shrinks -- e.g. a group emptying out.
+        self._section_index: int = 0
+        #: Last action_states payload sent, so a repeat reconcile with nothing
+        #: to report does not resend the same two LED states every tick.
+        self._last_section_states: dict | None = None
 
     def _build_link(self, cfg: config_module.Config):
         """Pick the pad transport.
@@ -144,6 +154,7 @@ class Daemon:
         # so the LED would keep showing the previous state and the new one
         # would appear simply not to work.
         palette = dict(NEW_STATE_PALETTE)
+        palette.update(_section_color_palette(self.cfg.section_colors))
         palette.update(self.cfg.palette or {})
         self.link.send({"t": "palette", "v": palette})
         if self.cfg.brightness is not None:
@@ -244,8 +255,13 @@ class Daemon:
         # InvokePattern is semantic rather than coordinate-backed, so exact
         # parent selection can happen while the pad's Win+<n> focus chord is
         # still bringing the app forward.
+        collapsed_group = (
+            self.db.collapsed_group_for(session.workspace_id)
+            if session.workspace_id
+            else None
+        )
         selected = actions.focus_pinned_session(
-            session.workspace_id, session.session_id
+            session.workspace_id, session.session_id, collapsed_group=collapsed_group
         )
         if not selected:
             # Exact and safe, but slower because the URI handler routes through
@@ -327,7 +343,64 @@ class Daemon:
             self._switch_to(slot)
             return
 
+        if name == "section_up":
+            self._change_section(-1)
+            return
+
+        if name == "section_down":
+            self._change_section(1)
+            return
+
         log.warning("unknown action %r", name)
+
+    def _change_section(self, delta: int) -> None:
+        """Move rows 1-2 to the previous/next section. A no-op at either end.
+
+        Sections do not wrap: stepping past the last one, or before the
+        first, leaves the current section exactly where it was.
+        """
+        if not self._sections:
+            return
+        new_index = self._section_index + delta
+        if not (0 <= new_index < len(self._sections)):
+            return
+        self._section_index = new_index
+        section = self._sections[self._section_index]
+        log.info(
+            "section -> %s (%s/%s)",
+            section.name,
+            self._section_index + 1,
+            len(self._sections),
+        )
+        self.store.apply_snapshot(section.sessions)
+        actions.warm_session_controls(
+            (s.workspace_id, s.session_id) for s in section.sessions
+        )
+        self._push_states()
+        self._push_section_leds()
+
+    def _section_indicator_state(self) -> str:
+        """LED state name for the section-indicator key (``section_down``,
+        physical row 3 key 1).
+
+        Section 0 ("Pinned") is the plain resting colour; every group section
+        gets its own solid colour by group index, so a glance at this one key
+        says which section rows 1-2 are showing. Deliberately no boundary
+        dimming here -- unlike the elsewhere-attention key, this key always
+        names the section you are looking at, whether or not there is
+        anywhere further to go.
+        """
+        return section_indicator_state(self._sections, self._section_index, self.cfg.section_colors)
+
+    def _elsewhere_attention_state(self) -> str:
+        """LED state name for the elsewhere-needs-you key (``section_up``,
+        physical row 3 key 2).
+
+        Rolled-up attention pooled across every section OTHER than the one
+        on screen -- not just the ones in one direction, since a group
+        needing you could be either above or below the current section.
+        """
+        return elsewhere_attention_state(self._sections, self._section_index)
 
     # -- outputs ---------------------------------------------------------
 
@@ -344,6 +417,22 @@ class Daemon:
             return
         if self.link.send({"t": "states", "v": states}):
             self._last_pushed = states
+
+    def _push_section_leds(self) -> None:
+        """Tell the pad what the two section-nav keys should show.
+
+        Sent by action name, never by physical key number -- see
+        _ACTION_NAME_TO_KEY in keybow/code.py: the daemon keeps no copy of the
+        physical layout.
+        """
+        states = {
+            "section_down": self._section_indicator_state(),
+            "section_up": self._elsewhere_attention_state(),
+        }
+        if states == self._last_section_states:
+            return
+        if self.link.send({"t": "action_states", "v": states}):
+            self._last_section_states = states
 
     def _push_focus(self, force: bool = False) -> None:
         """Tell the pad whether the app is frontmost.
@@ -364,15 +453,23 @@ class Daemon:
         # focus chord it did not need.
         self._push_focus()
         try:
-            sessions = self.db.pinned_sessions(self.cfg.slot_count)
+            self._sections = self.db.sections(self.cfg.slot_count)
         except Exception:
             log.exception("database reconcile failed")
             return
+        # Clamp rather than reset: a group emptying out (or the whole set
+        # shrinking) must not silently bounce you back to "Pinned".
+        if self._sections:
+            self._section_index = max(0, min(self._section_index, len(self._sections) - 1))
+        else:
+            self._section_index = 0
+        sessions = self._sections[self._section_index].sessions if self._sections else ()
         self.store.apply_snapshot(sessions)
         actions.warm_session_controls(
             (session.workspace_id, session.session_id) for session in sessions
         )
         self._push_states()
+        self._push_section_leds()
 
     # -- lifecycle -------------------------------------------------------
 
@@ -480,13 +577,24 @@ def _print_status(cfg: config_module.Config) -> int:
     if not db.available():
         print(f"cannot read {cfg.db_path}", file=sys.stderr)
         return 2
+    sections = db.sections(cfg.slot_count)
+    section_index = 0
     store = StateStore(slot_count=cfg.slot_count)
-    store.apply_snapshot(db.pinned_sessions(cfg.slot_count))
+    store.apply_snapshot(sections[section_index].sessions if sections else ())
     states = store.slot_states()
 
     print(f"database : {cfg.db_path}")
     print(f"hooks    : {cfg.hook_url_base}")
     print(f"installed: {hooks_install.is_installed(cfg)}")
+    if sections:
+        section = sections[section_index]
+        print(f"section  : {section.name} ({section_index + 1}/{len(sections)})")
+    else:
+        print("section  : (none)")
+    indicator = section_indicator_state(sections, section_index, cfg.section_colors)
+    elsewhere = elsewhere_attention_state(sections, section_index)
+    print(f"  key A (section_down) {indicator:<18} {STATE_COLOURS.get(indicator, indicator)}")
+    print(f"  key B (section_up)   {elsewhere:<18} {STATE_COLOURS.get(elsewhere, elsewhere)}")
     print()
     for slot in range(cfg.slot_count):
         session = store.session_for_slot(slot)
@@ -517,6 +625,55 @@ STATE_COLOURS = {
 NEW_STATE_PALETTE = {
     "interrupted": [[255, 20, 20], "pulse"],
 }
+
+
+def _section_color_palette(colors) -> dict:
+    """Palette entries for the per-group section-indicator colours.
+
+    Registered on every connect through the same generic ``palette`` message
+    as :data:`NEW_STATE_PALETTE`, for the same reason: the firmware validates
+    incoming state names against its own palette, and an unregistered
+    ``section_color_N`` would just be silently ignored -- leaving the
+    indicator key showing whatever it last showed instead of the section's
+    colour.
+    """
+    return {f"section_color_{i}": [list(c), "solid"] for i, c in enumerate(colors)}
+
+
+def section_indicator_state(sections, section_index: int, colours) -> str:
+    """LED state name for the section-indicator key, given a resolved
+    section list, the current index into it, and the configured colours.
+
+    Shared by :meth:`Daemon._section_indicator_state` and ``--status``, which
+    has no running :class:`Daemon` to ask. Section 0 ("Pinned") is the plain
+    resting colour; every group section after it cycles through ``colours``
+    by group index. No boundary dimming: this key always names the section
+    on screen, whether or not there is anywhere further to go.
+    """
+    if section_index <= 0 or not sections or not colours:
+        return "action"
+    group_index = section_index - 1
+    return f"section_color_{group_index % len(colours)}"
+
+
+def elsewhere_attention_state(sections, section_index: int) -> str:
+    """LED state name for the elsewhere-needs-you key, given a resolved
+    section list and the current index into it.
+
+    Shared by :meth:`Daemon._elsewhere_attention_state` and ``--status``.
+    Rolled-up attention pooled across every section OTHER than the one on
+    screen -- not just the ones in one direction, since a group needing you
+    could be either above or below the current section.
+    """
+    if len(sections) <= 1:
+        return "action"
+    pooled = [
+        s
+        for i, section in enumerate(sections)
+        if i != section_index
+        for s in section.sessions
+    ]
+    return section_attention(pooled) or "action"
 
 
 def _print_colours() -> int:

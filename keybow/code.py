@@ -46,7 +46,10 @@ import config
 #: 3 - `levels` (host sets the brightness levels the pad cycles through)
 #: 4 - session keys stop typing positional shortcuts; the daemon selects the
 #:     exact top-level parent by workspace id
-FIRMWARE_VERSION = 4
+#: 5 - row 3 keys 1-2 become section_down/section_up; `action_states`
+#:     (host sets the two section-nav keys' LED state by action name, since
+#:     the host never has its own copy of the physical key map)
+FIRMWARE_VERSION = 5
 SLOT_COUNT = len(config.SESSION_KEYS)
 
 keybow = PMK(Hardware())
@@ -335,6 +338,18 @@ def _cycle_brightness():
 # Semantic state per session slot.
 _slot_state = ["empty"] * SLOT_COUNT
 
+#: action name -> physical key number, e.g. "section_down" -> ROWS[2][0].
+#:
+#: Built once from config.ACTION_KEYS so the host can drive these keys'
+#: LEDs by the same action name it already sends key presses tagged with --
+#: never by physical key number, which the host has no copy of.
+_ACTION_NAME_TO_KEY = {name: key for key, name in config.ACTION_KEYS.items()}
+
+#: Host-driven LED state per action key, keyed by physical key number.
+#: Empty until the host sends one, so a fresh boot shows the plain "action"
+#: resting colour rather than nothing.
+_action_key_state = {}
+
 # Momentary highlight for action keys: key number -> expiry timestamp.
 _action_flash = {}
 _ACTION_FLASH_SECS = 0.18
@@ -409,6 +424,15 @@ def _handle_message(msg):
         for i in range(min(SLOT_COUNT, len(values))):
             if values[i] in _palette:
                 _slot_state[i] = values[i]
+        return
+
+    if kind == "action_states":
+        # Host addresses these by action name, never by physical key number --
+        # see _ACTION_NAME_TO_KEY.
+        for name, state in (msg.get("v") or {}).items():
+            key_number = _ACTION_NAME_TO_KEY.get(name)
+            if key_number is not None and state in _palette:
+                _action_key_state[key_number] = state
         return
 
     if kind == "busy_done":
@@ -511,7 +535,7 @@ def _resolve(key_number, now, connected):
     elif key_number in _TYPING_KEYS:
         name = "typing_active" if _action_flash.get(key_number, 0) > now else "typing"
     elif key_number in config.ACTION_KEYS:
-        name = "action_active" if _action_flash.get(key_number, 0) > now else "action"
+        name = "action_active" if _action_flash.get(key_number, 0) > now else _action_key_state.get(key_number, "action")
     elif key_number in config.SESSION_KEYS:
         if _press_flash.get(key_number, 0) > now:
             # Blink white for as long as the navigation is in flight, so the

@@ -84,6 +84,18 @@ log_level = "INFO"
 # Global brightness, 0.0-1.0. Unset means use the firmware default.
 # brightness = 0.6
 
+# Solid colours for the section-indicator key (row 3 key 1), one per group
+# section beyond "Pinned" -- cycled if you have more groups than colours.
+# Format: [r, g, b]. Defaults: teal, orange, magenta, yellow, sky blue, lime.
+# section_colors = [
+#     [0, 220, 200],
+#     [255, 140, 0],
+#     [230, 0, 200],
+#     [230, 210, 0],
+#     [60, 170, 255],
+#     [150, 230, 0],
+# ]
+
 # Optional colour overrides pushed to the pad at connect, so you can retune
 # without reflashing. Format: state = [[r, g, b], "effect"].
 # Effects: "solid", "breathe", "pulse", "off".

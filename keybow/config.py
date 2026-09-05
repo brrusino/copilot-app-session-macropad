@@ -40,11 +40,13 @@ SESSION_KEYS = ROWS[0] + ROWS[1]
 
 # Row 3, left to right.
 #
-# Only the first needs the host: "which session wants me" is derived from
-# state the pad cannot see. The other three are fixed chords it types itself.
-# The first also doubles as the brightness key when held -- see BRIGHTNESS_KEY.
+# Both of the first two need the host: which section is on screen, and
+# whether anything off-screen wants you, are both derived from state the pad
+# cannot see. The other two are fixed chords it types itself. The first also
+# doubles as the brightness key when held -- see BRIGHTNESS_KEY.
 ACTION_KEYS = {
-    ROWS[2][0]: "next_attention",
+    ROWS[2][0]: "section_down",
+    ROWS[2][1]: "section_up",
 }
 
 # Dictation: two adjacent bottom-row keys driving ONE push-to-talk chord.
@@ -100,16 +102,6 @@ FOCUS_KEYS = tuple(k for row in ROWS for k in row if k not in DICTATION_KEYS)
 # Tune it here if a slower moment leaves the command unsent.
 MENU_SETTLE = 0.4
 
-# The app's own command for the rubber-duck subagent.
-#
-# This is a first-class slash command, not a sentence: the `rubber_duck`
-# experiment adds /rubber-duck to the composer. Typing the command beats typing
-# a request that asks for the same thing, because the app dispatches it
-# directly instead of an agent having to read the wording and decide what was
-# meant. Appended to whatever is already in the composer, so you can write the
-# context first and then hit the key.
-RUBBER_DUCK_COMMAND = "/rubber-duck"
-
 # Keys that type a fixed sequence straight into whatever has focus.
 #
 # These live on the pad rather than going through the daemon for the same
@@ -120,13 +112,11 @@ RUBBER_DUCK_COMMAND = "/rubber-duck"
 # Each value is a tuple, sent in order. An entry is either a chord name, a
 # number meaning "pause this many seconds", or "text:..." for literal text.
 #
-#   row 3 [1]   - rubber duck: pressure-test what we just did
 #   row 3 [2]   - cycle mode: plan -> interactive -> autopilot
 #   row 3 [3]   - compact this session
 #   row 4 left  - clear the composer: select everything, then delete it
 #   row 4 right - submit, which is also how you approve a prompt
 TYPING_KEYS = {
-    ROWS[2][1]: ("text:" + RUBBER_DUCK_COMMAND, MENU_SETTLE, "enter"),
     ROWS[2][2]: ("shift+tab",),
     ROWS[2][3]: ("text:/compact", MENU_SETTLE, "enter"),
     ROWS[3][0]: ("ctrl+a", "delete"),

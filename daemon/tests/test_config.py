@@ -129,3 +129,26 @@ def test_daemon_section(tmp_path):
 def test_hook_url_base_uses_configured_port(tmp_path):
     path = write(tmp_path, '[hooks]\nhost = "127.0.0.1"\nport = 9999\n')
     assert config_module.load(path).hook_url_base == "http://127.0.0.1:9999"
+
+
+def test_default_section_colors_when_unconfigured(tmp_path):
+    cfg = config_module.load(tmp_path / "does-not-exist.toml")
+    assert cfg.section_colors == config_module.DEFAULT_SECTION_COLORS
+
+
+def test_section_colors_override(tmp_path):
+    path = write(
+        tmp_path,
+        """
+        [leds]
+        section_colors = [[10, 20, 30], [40, 50, 60]]
+        """,
+    )
+    assert config_module.load(path).section_colors == [(10, 20, 30), (40, 50, 60)]
+
+
+def test_empty_section_colors_keeps_the_default(tmp_path):
+    """An empty override would leave every group section with no colour to
+    cycle through, so it is treated the same as not configuring the key."""
+    path = write(tmp_path, "[leds]\nsection_colors = []\n")
+    assert config_module.load(path).section_colors == config_module.DEFAULT_SECTION_COLORS

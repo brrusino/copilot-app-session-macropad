@@ -10,20 +10,39 @@ never through its storage.
 Verified layout of the bits we depend on:
 
 ``app_state['sidebar-project-groups']``
-    JSON ``{"state": {"pinnedWorkspaceIds": [...], ...}, "version": N}``.
-    ``pinnedWorkspaceIds`` is an ordered array of workspace ids -- slot *i* of
-    the macropad mirrors entry *i*.
+    JSON ``{"state": {"pinnedWorkspaceIds": [...], "collapsedExplicitGroupIds":
+    [...], ...}, "version": N}``. ``pinnedWorkspaceIds`` is an ordered array of
+    workspace ids -- slot *i* of the macropad mirrors entry *i*, once entries
+    belonging to an explicit group are set aside for that group's own section.
+    ``collapsedExplicitGroupIds`` lists the ids of groups the sidebar is not
+    currently rendering the members of.
+
+``app_state['session-groups']``
+    JSON ``{"state": {"groups": [{"id", "name", "members": [{"kind", "id"},
+    ...]}, ...]}}``. Any pinned item that is a member of one of these groups is
+    removed from "Pinned" and rendered under the group instead, so the macropad
+    mirrors that with one section per group. ``kind`` has only ever been
+    observed as ``"workspace"``; a member's ``id`` is trusted regardless.
 
 ``app_state['workspace-unread']``
     Bare JSON array of workspace ids with unread agent output.
 
 ``workspaces``
-    ``id``, ``name``, ``session_id``, ``archived_at``, ``updated_at``.
+    ``id``, ``name``, ``session_id``, ``archived_at``, ``updated_at``,
+    ``creator_session_id``, ``coordinating_creator_session_id``.
 
 ``workspace_parent_links``
     ``child_workspace_id`` -> ``parent_workspace_id``. A workspace appearing as
     a child here was spawned by another session; those are excluded so the pad
-    shows only top-level work.
+    shows only top-level work. This is not the only way a workspace can be a
+    child -- see ``creator_session_id`` below.
+
+    An agent-spawned child can also be linked to its parent purely through
+    ``workspaces.creator_session_id`` (or ``coordinating_creator_session_id``)
+    equalling the *parent's* session id, with no row in this table at all.
+    That id may name another workspace's session, or a session pinned as a
+    standalone chat -- either way, the spawned workspace is still a subagent's
+    worktree and gets the same treatment.
 
 ``sessions``
     ``id``, ``title``, ``is_running``, ``was_interrupted``, ``archived_at``.
@@ -40,6 +59,7 @@ from typing import Iterable
 
 PINS_KEY = "sidebar-project-groups"
 UNREAD_KEY = "workspace-unread"
+GROUPS_KEY = "session-groups"
 
 #: Sidebar sort mode that orders by recent activity rather than stored order.
 ACTIVITY_SORT = "activity"
@@ -84,6 +104,20 @@ class PinnedSession:
     @property
     def focusable(self) -> bool:
         return self.session_id is not None
+
+
+@dataclass(frozen=True)
+class Section:
+    """One screen's worth of slots: "Pinned", or one explicit sidebar group.
+
+    Mirrors the sidebar exactly -- a pinned item that belongs to a group is
+    rendered under that group instead of "Pinned", so the pad's "Pinned"
+    section excludes it too rather than showing a key for a row the group
+    view has already claimed.
+    """
+
+    name: str
+    sessions: tuple[PinnedSession, ...]
 
 
 #: Columns whose sum tracks work in progress. Token totals advance while an
@@ -150,6 +184,69 @@ class CopilotDB:
         pinned = (blob.get("state") or {}).get("pinnedWorkspaceIds") or []
         return [w for w in pinned if isinstance(w, str)]
 
+    def collapsed_group_ids(self, conn: sqlite3.Connection) -> set[str]:
+        blob = self._app_state(conn, PINS_KEY) or {}
+        ids = (blob.get("state") or {}).get("collapsedExplicitGroupIds") or []
+        return {i for i in ids if isinstance(i, str)}
+
+    def groups(self, conn: sqlite3.Connection) -> list[dict]:
+        """Explicit sidebar groups, in stored order.
+
+        Each entry is ``{"id", "name", "members"}``, ``members`` being the
+        ordered list of member ids. A member's ``kind`` has only ever been
+        observed as ``"workspace"``; it is not checked, since a group is just
+        another ordered list of slot candidates regardless of what its member
+        turns out to resolve to.
+        """
+        blob = self._app_state(conn, GROUPS_KEY) or {}
+        raw_groups = (blob.get("state") or {}).get("groups") or []
+        result = []
+        for g in raw_groups:
+            if not isinstance(g, dict) or not g.get("id"):
+                continue
+            members = [
+                m.get("id")
+                for m in (g.get("members") or [])
+                if isinstance(m, dict) and isinstance(m.get("id"), str)
+            ]
+            result.append(
+                {"id": g["id"], "name": str(g.get("name") or "(group)"), "members": members}
+            )
+        return result
+
+    def grouped_member_ids(self, conn: sqlite3.Connection) -> set[str]:
+        """Every id that belongs to some explicit group.
+
+        A pinned item in this set is rendered under its group in the sidebar,
+        not under "Pinned" -- so the Pinned section must exclude it too, or a
+        key would silently duplicate a row the group section already shows.
+        """
+        return {m for g in self.groups(conn) for m in g["members"]}
+
+    def collapsed_group_for(self, workspace_id: str) -> str | None:
+        """Display name of the collapsed group containing ``workspace_id``.
+
+        None both when the workspace is in no group and when its group is
+        currently expanded -- either way there is nothing to expand before
+        looking for its row. The *name* is what identifies a group's header in
+        the accessibility tree: group headers carry no automation id, only a
+        ``ButtonControl.Name`` set to the group's display name.
+        """
+        if not workspace_id:
+            return None
+        try:
+            with self._connect() as conn:
+                collapsed = self.collapsed_group_ids(conn)
+                for g in self.groups(conn):
+                    if workspace_id in g["members"]:
+                        return g["name"] if g["id"] in collapsed else None
+        except sqlite3.Error:
+            # Same tolerance as focused_ids(): this runs on the navigation
+            # path, where a transient DB hiccup must fall through to a plain
+            # (non-collapsed) lookup rather than take down the click.
+            return None
+        return None
+
     def focused_ids(self) -> set[str]:
         """Identifiers of whatever the app currently has open.
 
@@ -185,38 +282,108 @@ class CopilotDB:
         blob = self._app_state(conn, PINS_KEY) or {}
         return str((blob.get("state") or {}).get("workspaceSortMode") or "")
 
-    @staticmethod
-    def child_workspace_ids(conn: sqlite3.Connection) -> set[str]:
+    def child_workspace_ids(
+        self, conn: sqlite3.Connection, pinned_chat_session_ids: Iterable[str] = ()
+    ) -> set[str]:
         """Workspaces spawned by another session.
 
         These are the app's child sessions; they are excluded so a key always
         addresses a top-level piece of work rather than a subagent's worktree.
         Their *activity* is still rolled up into the parent -- see
         :meth:`descendants_of`.
+
+        Two independent mechanisms name a parent, and a workspace counts as a
+        child if either says so. ``workspace_parent_links`` is the older,
+        explicit table. ``creator_session_id`` (or
+        ``coordinating_creator_session_id``) links purely through session ids,
+        with no linking row at all -- so a workspace whose creator is another
+        workspace's session, or a session pinned as a standalone chat, is a
+        child too even though nothing here ever recorded it as one.
         """
+        ids: set[str] = set()
         try:
             rows = conn.execute(
                 "SELECT child_workspace_id FROM workspace_parent_links"
             )
+            ids |= {row[0] for row in rows if row[0]}
         except sqlite3.Error:
-            # Older schema without parent links: nothing is a child.
-            return set()
-        return {row[0] for row in rows if row[0]}
+            # Older schema without parent links: nothing is a child there.
+            pass
+        ids |= self._creator_session_children(conn, pinned_chat_session_ids)
+        return ids
 
     @staticmethod
-    def _child_map(conn: sqlite3.Connection) -> dict[str, list[str]]:
-        """parent workspace id -> direct children."""
+    def _creator_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+        try:
+            return conn.execute(
+                "SELECT id, session_id, creator_session_id,"
+                " coordinating_creator_session_id FROM workspaces"
+            ).fetchall()
+        except sqlite3.Error:
+            # Older schema predating these columns: nothing is a child there.
+            return []
+
+    def _creator_session_children(
+        self, conn: sqlite3.Connection, pinned_chat_session_ids: Iterable[str] = ()
+    ) -> set[str]:
+        """Workspaces linked to a parent purely by session id.
+
+        A workspace's creator session belongs to a "parent" of one of two
+        shapes: another workspace (found by matching every workspace's own
+        ``session_id``, not only pinned ones -- an agent-spawned child is
+        rarely itself pinned), or a session pinned as a standalone chat, which
+        has no workspace of its own to match against.
+        """
+        rows = self._creator_rows(conn)
+        parent_session_ids = {r["session_id"] for r in rows if r["session_id"]}
+        parent_session_ids |= {s for s in pinned_chat_session_ids if s}
+        children: set[str] = set()
+        for r in rows:
+            for creator in (r["creator_session_id"], r["coordinating_creator_session_id"]):
+                if creator and creator != r["session_id"] and creator in parent_session_ids:
+                    children.add(r["id"])
+                    break
+        return children
+
+    def _child_map(
+        self, conn: sqlite3.Connection, pinned_chat_session_ids: Iterable[str] = ()
+    ) -> dict[str, list[str]]:
+        """parent id -> direct children, keyed by whatever a pin for that
+        parent would actually be: a workspace id for a workspace parent, or
+        the session id itself for a chat-session parent.
+        """
         mapping: dict[str, list[str]] = {}
         try:
             rows = conn.execute(
                 "SELECT parent_workspace_id, child_workspace_id"
                 " FROM workspace_parent_links"
             )
+            for parent, child in rows:
+                if parent and child:
+                    mapping.setdefault(parent, []).append(child)
         except sqlite3.Error:
-            return mapping
-        for parent, child in rows:
-            if parent and child:
-                mapping.setdefault(parent, []).append(child)
+            pass
+
+        creator_rows = self._creator_rows(conn)
+        session_to_workspace = {
+            r["session_id"]: r["id"] for r in creator_rows if r["session_id"]
+        }
+        chat_parents = {s for s in pinned_chat_session_ids if s}
+        for r in creator_rows:
+            for creator in (r["creator_session_id"], r["coordinating_creator_session_id"]):
+                if not creator:
+                    continue
+                parent_ws = session_to_workspace.get(creator)
+                if parent_ws and parent_ws != r["id"]:
+                    bucket = mapping.setdefault(parent_ws, [])
+                    if r["id"] not in bucket:
+                        bucket.append(r["id"])
+                    break
+                if creator in chat_parents:
+                    bucket = mapping.setdefault(creator, [])
+                    if r["id"] not in bucket:
+                        bucket.append(r["id"])
+                    break
         return mapping
 
     @classmethod
@@ -250,54 +417,58 @@ class CopilotDB:
             return {w for w in values if isinstance(w, str)}
         return set()
 
+    def _pinned_chat_session_ids(self, conn: sqlite3.Connection) -> set[str]:
+        """Pinned ids that are chat sessions rather than workspaces.
+
+        Computed against the *whole* pin list regardless of grouping or
+        section, since a session pinned as a standalone chat is a candidate
+        "parent" for creator-session child detection no matter which section
+        (or none) it ends up rendered under.
+        """
+        order = self.pinned_workspace_ids(conn)
+        if not order:
+            return set()
+        rows = self._fetch_workspaces(conn, order)
+        return {pin for pin in order if pin not in rows}
+
     # -- the query the daemon actually uses ------------------------------
 
-    def pinned_sessions(self, limit: int) -> list[PinnedSession]:
-        """Resolve the first ``limit`` pinned slots, in the order you dragged them.
-
-        ``pinnedWorkspaceIds`` is a manually-ordered list, so it is used as-is
-        rather than re-sorted -- key N must be the Nth pin you see.
-
-        Two subtleties, both learned from real data:
-
-        * **A pin is not always a workspace id.** Chat sessions have no
-          workspace, so their *session* id appears in the same list. Dropping
-          them shifts every later key up by one and silently mis-addresses
-          sessions.
-        * **Archived pins and child sessions are skipped.** An archived pin is
-          gone from the sidebar, and a child workspace is a subagent's worktree
-          rather than something you drive from the pad.
+    def _resolve_ordered(
+        self,
+        conn: sqlite3.Connection,
+        order: list[str],
+        limit: int,
+        *,
+        unread: set[str],
+        children: set[str],
+        child_map: dict[str, list[str]],
+        asking_sessions: dict[str, float],
+    ) -> list[PinnedSession]:
+        """Resolve an ordered id list (a pin list, or a group's members) to
+        the first ``limit`` sessions, applying the shared archived/child/
+        rollup rules. Shared by :meth:`pinned_sessions` and :meth:`sections`
+        so a group's slots behave exactly like the Pinned section's.
         """
-        with self._connect() as conn:
-            order = self.pinned_workspace_ids(conn)
-            if not order:
-                return []
-            unread = self.unread_workspace_ids(conn)
-            children = self.child_workspace_ids(conn)
-            child_map = self._child_map(conn)
-            rows = self._fetch_workspaces(conn, order)
-            # Anything not matching a workspace may still be a pinned chat
-            # session, which has no workspace of its own.
-            unmatched = [pin for pin in order if pin not in rows]
-            session_rows = self._fetch_sessions(conn, unmatched)
+        if not order:
+            return []
+        rows = self._fetch_workspaces(conn, order)
+        # Anything not matching a workspace may still be a pinned chat
+        # session, which has no workspace of its own.
+        unmatched = [pin for pin in order if pin not in rows]
+        session_rows = self._fetch_sessions(conn, unmatched)
 
-            # A parent whose children are working IS working, so roll their
-            # activity up. Without this a session that has delegated all its
-            # work looks idle while its subagents run.
-            descendants = {
-                pin: self.descendants_of(child_map, pin)
-                for pin in order
-                if pin not in children
-            }
-            every_descendant = set()
-            for ids in descendants.values():
-                every_descendant |= ids
-            descendant_rows = self._fetch_workspaces(conn, every_descendant)
-
-            # Which sessions are currently stopped waiting on a human. Resolved
-            # for the pins and every descendant at once, so a parent can show
-            # that a subagent is blocked on you.
-            asking_sessions = self._asking_session_ids(conn)
+        # A parent whose children are working IS working, so roll their
+        # activity up. Without this a session that has delegated all its
+        # work looks idle while its subagents run.
+        descendants = {
+            pin: self.descendants_of(child_map, pin)
+            for pin in order
+            if pin not in children
+        }
+        every_descendant = set()
+        for ids in descendants.values():
+            every_descendant |= ids
+        descendant_rows = self._fetch_workspaces(conn, every_descendant)
 
         def rolled_up(pin: str, own_running: bool, own_unread: bool):
             """Fold descendant state into a pinned slot.
@@ -361,16 +532,22 @@ class CopilotDB:
             session = session_rows.get(pin)
             if session is None or session["archived_at"] is not None:
                 continue
-            asking_at = asking_sessions.get(pin, 0.0)
+            # A pinned chat session can be a parent too, via creator_session_id
+            # naming its own session id -- a workspace_parent_links parent was
+            # always a workspace, but this new linkage has no such limit.
+            running, has_unread, child_asking_at, child_interrupted = rolled_up(
+                pin, bool(session["is_running"]), pin in unread
+            )
+            asking_at = max(asking_sessions.get(pin, 0.0), child_asking_at)
             resolved.append(
                 PinnedSession(
                     slot=len(resolved),
                     workspace_id=None,
                     session_id=pin,
                     name=session["title"] or "(untitled)",
-                    is_running=bool(session["is_running"]),
-                    unread=pin in unread,
-                    was_interrupted=bool(session["was_interrupted"]),
+                    is_running=running,
+                    unread=has_unread,
+                    was_interrupted=bool(session["was_interrupted"]) or child_interrupted,
                     asking=asking_at > 0.0,
                     asking_at=asking_at,
                     activity=int(session["activity"] or 0),
@@ -378,6 +555,95 @@ class CopilotDB:
                 )
             )
         return resolved
+
+    def _section_inputs(self, conn: sqlite3.Connection):
+        """The per-connection resources every section resolves against."""
+        unread = self.unread_workspace_ids(conn)
+        pinned_chat_ids = self._pinned_chat_session_ids(conn)
+        children = self.child_workspace_ids(conn, pinned_chat_ids)
+        child_map = self._child_map(conn, pinned_chat_ids)
+        asking_sessions = self._asking_session_ids(conn)
+        return unread, children, child_map, asking_sessions
+
+    def pinned_sessions(self, limit: int) -> list[PinnedSession]:
+        """Resolve the first ``limit`` pinned slots, in the order you dragged them.
+
+        ``pinnedWorkspaceIds`` is a manually-ordered list, so it is used as-is
+        rather than re-sorted -- key N must be the Nth pin you see.
+
+        Three subtleties, all learned from real data:
+
+        * **A pin is not always a workspace id.** Chat sessions have no
+          workspace, so their *session* id appears in the same list. Dropping
+          them shifts every later key up by one and silently mis-addresses
+          sessions.
+        * **Archived pins and child sessions are skipped.** An archived pin is
+          gone from the sidebar, and a child workspace is a subagent's worktree
+          rather than something you drive from the pad.
+        * **A pin that belongs to an explicit group is skipped here too.** The
+          sidebar renders it under the group instead of "Pinned", so this is
+          just the "Pinned" section -- see :meth:`sections` for the rest.
+        """
+        with self._connect() as conn:
+            order = self.pinned_workspace_ids(conn)
+            if not order:
+                return []
+            grouped = self.grouped_member_ids(conn)
+            order = [w for w in order if w not in grouped]
+            unread, children, child_map, asking_sessions = self._section_inputs(conn)
+            return self._resolve_ordered(
+                conn,
+                order,
+                limit,
+                unread=unread,
+                children=children,
+                child_map=child_map,
+                asking_sessions=asking_sessions,
+            )
+
+    def sections(self, limit: int) -> list[Section]:
+        """Every section the sidebar shows: "Pinned", then one per group.
+
+        Mirrors :meth:`pinned_sessions` for section 0, then resolves each
+        explicit group's members the same way. A group with no eligible
+        members (all archived, or all children) is left out entirely, since
+        there is nothing on a key for it to show.
+        """
+        with self._connect() as conn:
+            pinned_order = self.pinned_workspace_ids(conn)
+            grouped = self.grouped_member_ids(conn)
+            unread, children, child_map, asking_sessions = self._section_inputs(conn)
+
+            pinned_only = [w for w in pinned_order if w not in grouped]
+            result = [
+                Section(
+                    name="Pinned",
+                    sessions=tuple(
+                        self._resolve_ordered(
+                            conn,
+                            pinned_only,
+                            limit,
+                            unread=unread,
+                            children=children,
+                            child_map=child_map,
+                            asking_sessions=asking_sessions,
+                        )
+                    ),
+                )
+            ]
+            for g in self.groups(conn):
+                resolved = self._resolve_ordered(
+                    conn,
+                    g["members"],
+                    limit,
+                    unread=unread,
+                    children=children,
+                    child_map=child_map,
+                    asking_sessions=asking_sessions,
+                )
+                if resolved:
+                    result.append(Section(name=g["name"], sessions=tuple(resolved)))
+            return result
 
     #: Activity types that mean "this session has stopped and wants you".
     ASKING_ACTIVITY = ("agent_asking", "agent_plan_ready")

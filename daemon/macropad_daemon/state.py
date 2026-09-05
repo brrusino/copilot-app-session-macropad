@@ -414,3 +414,34 @@ class StateStore:
                 if states[slot] == wanted:
                     return slot
         return None
+
+
+def section_attention(sessions) -> str | None:
+    """Rolled-up attention state across a whole section, DB fields only.
+
+    Used for the two section-nav keys' LEDs, which represent sessions *not*
+    currently on screen. Deliberately does not go through
+    :meth:`StateStore.resolve`: only the current section's sessions are passed
+    to ``apply_snapshot`` each reconcile tick, and ``resolve`` reads per-session
+    hook overlays that ``apply_snapshot`` prunes for anything not in that
+    snapshot -- resolving an off-screen session through the overlay store would
+    have its bookkeeping wiped out from under it every tick. ``PinnedSession``
+    already carries everything the database itself knows (``asking``,
+    ``was_interrupted``, ``is_running``, ``unread``), which is enough to mirror
+    :meth:`StateStore.resolve`'s priority order minus the two hook-only states
+    (``needs_approval``-from-a-pending-tool-call and ``error``) that have no
+    database equivalent.
+
+    Returns ``None`` when nothing in the section wants attention, so the
+    caller can fall back to the plain resting colour.
+    """
+    any_asking = any(s.asking for s in sessions)
+    if any_asking:
+        return NEEDS_APPROVAL
+    if any(s.was_interrupted for s in sessions):
+        return INTERRUPTED
+    if any(s.is_running for s in sessions):
+        return WORKING
+    if any(s.unread for s in sessions):
+        return UNREAD
+    return None
