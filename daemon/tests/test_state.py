@@ -214,11 +214,18 @@ def test_prompt_before_snapshot_catches_up():
     assert store.slot_states()[0] == WORKING
 
 
-def test_stale_working_hook_does_not_pin_the_slot():
-    """Once a newer snapshot disagrees, the database wins."""
+def test_working_hook_outlives_a_snapshot_the_app_never_updates():
+    """The app stops writing some sessions' rows entirely (is_running 0,
+    tokens frozen) while they are mid-turn. Hooks are the only truth there,
+    so a working hook must hold across later snapshots until a stop event."""
     store = StateStore()
     store.apply_hook("userPromptSubmitted", "sess-a", now=99.0)
     store.apply_snapshot([session(is_running=False)], now=100.0)
+    assert store.slot_states()[0] == WORKING
+    store.apply_snapshot([session(is_running=False)], now=101.0)
+    assert store.slot_states()[0] == WORKING
+    store.apply_hook("agentStop", "sess-a", now=102.0)
+    store.apply_snapshot([session(is_running=False)], now=103.0)
     assert store.slot_states()[0] == IDLE
 
 

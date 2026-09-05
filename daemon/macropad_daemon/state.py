@@ -377,9 +377,15 @@ class StateStore:
                 return True
         if overlay is None:
             return False
-        # A hook saw work start more recently than our last snapshot, so the
-        # database simply has not caught up yet.
-        return overlay.working and overlay.working_at >= self._snapshot_at
+        # A turn is bounded in the hook stream: a prompt or tool call opens
+        # it, agentStop / sessionEnd / errorOccurred close it. Between those
+        # the session is working whatever the database says -- the app stops
+        # updating some sessions' rows altogether (is_running 0, token totals
+        # frozen for days) while they are demonstrably mid-turn, and only
+        # trusting a hook until the next snapshot made those keys flicker
+        # blue for a second per tool call. The cost is that a lost stop event
+        # leaves a key blue until that session's next hook.
+        return overlay.working
 
     def _unread_hinted(self, overlay: SessionOverlay | None) -> bool:
         if overlay is None or not overlay.unread_hint:
