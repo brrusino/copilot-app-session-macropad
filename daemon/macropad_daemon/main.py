@@ -29,7 +29,7 @@ from . import config as config_module
 from . import actions, hooks_install
 from .copilot_db import CopilotDB
 from .hook_server import PortInUseError
-from .state import StateStore, section_attention
+from .state import StateStore
 
 log = logging.getLogger("macropad")
 
@@ -384,7 +384,7 @@ class Daemon:
             self._section_index + 1,
             len(self._sections),
         )
-        self.store.apply_snapshot(section.sessions, retain=self._all_section_session_ids())
+        self.store.apply_snapshot(section.sessions, offscreen=self._offscreen_sessions())
         self._push_states()
         self._push_section_leds()
         # The LEDs are the feedback for the tap, so they go first. Re-caching
@@ -398,14 +398,14 @@ class Daemon:
             daemon=True,
         ).start()
 
-    def _all_section_session_ids(self) -> set[str]:
-        """Every session reachable from any section, on screen or not."""
-        return {
-            s.session_id
-            for section in self._sections
+    def _offscreen_sessions(self) -> list:
+        """Every session in a section other than the one on screen."""
+        return [
+            s
+            for i, section in enumerate(self._sections)
+            if i != self._section_index
             for s in section.sessions
-            if s.session_id
-        }
+        ]
 
     def _section_indicator_state(self) -> str:
         """LED state name for the section-indicator key (``section_up``,
@@ -428,7 +428,7 @@ class Daemon:
         on screen -- not just the ones in one direction, since a group
         needing you could be either above or below the current section.
         """
-        return elsewhere_attention_state(self._sections, self._section_index)
+        return elsewhere_attention_state(self._sections, self._section_index, self.store)
 
     # -- outputs ---------------------------------------------------------
 
@@ -492,7 +492,7 @@ class Daemon:
         else:
             self._section_index = 0
         sessions = self._sections[self._section_index].sessions if self._sections else ()
-        self.store.apply_snapshot(sessions, retain=self._all_section_session_ids())
+        self.store.apply_snapshot(sessions, offscreen=self._offscreen_sessions())
         actions.warm_session_controls(
             (session.workspace_id, session.session_id) for session in sessions
         )
@@ -608,7 +608,10 @@ def _print_status(cfg: config_module.Config) -> int:
     sections = db.sections(cfg.slot_count)
     section_index = 0
     store = StateStore(slot_count=cfg.slot_count)
-    store.apply_snapshot(sections[section_index].sessions if sections else ())
+    store.apply_snapshot(
+        sections[section_index].sessions if sections else (),
+        offscreen=[s for i, sec in enumerate(sections) if i != section_index for s in sec.sessions],
+    )
     states = store.slot_states()
 
     print(f"database : {cfg.db_path}")
@@ -620,7 +623,7 @@ def _print_status(cfg: config_module.Config) -> int:
     else:
         print("section  : (none)")
     indicator = section_indicator_state(sections, section_index, cfg.section_colors)
-    elsewhere = elsewhere_attention_state(sections, section_index)
+    elsewhere = elsewhere_attention_state(sections, section_index, store)
     print(f"  key A (section_up)   {indicator:<18} {STATE_COLOURS.get(indicator, indicator)}")
     print(f"  key B (section_down) {elsewhere:<18} {STATE_COLOURS.get(elsewhere, elsewhere)}")
     print()
@@ -684,9 +687,10 @@ def section_indicator_state(sections, section_index: int, colours) -> str:
     return f"section_color_{group_index % len(colours)}"
 
 
-def elsewhere_attention_state(sections, section_index: int) -> str:
+def elsewhere_attention_state(sections, section_index: int, store: StateStore) -> str:
     """LED state name for the elsewhere-needs-you key, given a resolved
-    section list and the current index into it.
+    section list, the current index into it, and the store those sections
+    were applied to.
 
     Shared by :meth:`Daemon._elsewhere_attention_state` and ``--status``.
     Rolled-up attention pooled across every section OTHER than the one on
@@ -701,7 +705,7 @@ def elsewhere_attention_state(sections, section_index: int) -> str:
         if i != section_index
         for s in section.sessions
     ]
-    return section_attention(pooled) or "action"
+    return store.rolled_up(pooled) or "action"
 
 
 def _print_colours() -> int:

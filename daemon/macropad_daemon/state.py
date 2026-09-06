@@ -208,20 +208,24 @@ class StateStore:
         self,
         sessions: list[PinnedSession],
         now: float | None = None,
-        retain: Iterable[str] = (),
+        offscreen: Iterable[PinnedSession] = (),
     ) -> None:
         """Replace the database view of the pinned slots.
 
-        ``retain`` names sessions that are off-screen but still reachable --
-        the other sections. Their hook bookkeeping must survive a section
-        change: it is the only evidence that an answered question was
-        answered, and dropping it made every switch back to a section blink
-        orange again until that session's next hook.
+        ``offscreen`` is every session in the other sections. They get the
+        same bookkeeping as the on-screen ones (last seen running, token
+        movement, when a question first appeared), so :meth:`resolve` gives
+        the same answer for them as it would if they were on a key -- the
+        elsewhere-needs-you LED depends on that. It also keeps their hook
+        evidence alive across a section change: that is the only proof an
+        answered question was answered, and dropping it made every switch
+        back to a section blink orange again until that session's next hook.
         """
         self._sessions = list(sessions)[: self.slot_count]
         self._snapshot_at = time.monotonic() if now is None else now
 
-        for session in self._sessions:
+        offscreen = list(offscreen)
+        for session in (*self._sessions, *offscreen):
             if not session.session_id:
                 continue
             if session.is_running:
@@ -246,8 +250,7 @@ class StateStore:
 
         # Drop per-session bookkeeping for sessions that are no longer pinned
         # anywhere, so these dicts cannot grow without bound over a long uptime.
-        live = {s.session_id for s in self._sessions if s.session_id}
-        live.update(s for s in retain if s)
+        live = {s.session_id for s in (*self._sessions, *offscreen) if s.session_id}
         for store in (self._overlays, self._last_running_at, self._last_activity):
             for session_id in [k for k in store if k not in live]:
                 del store[session_id]
@@ -408,6 +411,21 @@ class StateStore:
         # believe the app: you have evidently already read it.
         return overlay.unread_hint_at >= self._snapshot_at
 
+    def rolled_up(self, sessions: Iterable[PinnedSession]) -> str | None:
+        """The one state that best summarises a set of off-screen sessions.
+
+        Each session goes through :meth:`resolve`, so hook evidence retires
+        their questions exactly as it does for a session on a key; the only
+        requirement is that they were passed to :meth:`apply_snapshot` as
+        ``offscreen``. Returns ``None`` when nothing wants attention, so the
+        caller can fall back to the plain resting colour.
+        """
+        states = {self.resolve(session) for session in sessions}
+        for wanted in (NEEDS_APPROVAL, ERROR, INTERRUPTED, WORKING, UNREAD):
+            if wanted in states:
+                return wanted
+        return None
+
     def slot_states(self) -> list[str]:
         """State string per slot, padded to ``slot_count`` with ``empty``."""
         states = [self.resolve(self.session_for_slot(i)) for i in range(self.slot_count)]
@@ -434,34 +452,3 @@ class StateStore:
                 if states[slot] == wanted:
                     return slot
         return None
-
-
-def section_attention(sessions) -> str | None:
-    """Rolled-up attention state across a whole section, DB fields only.
-
-    Used for the two section-nav keys' LEDs, which represent sessions *not*
-    currently on screen. Deliberately does not go through
-    :meth:`StateStore.resolve`: only the current section's sessions are passed
-    to ``apply_snapshot`` each reconcile tick, and ``resolve`` reads per-session
-    hook overlays that ``apply_snapshot`` prunes for anything not in that
-    snapshot -- resolving an off-screen session through the overlay store would
-    have its bookkeeping wiped out from under it every tick. ``PinnedSession``
-    already carries everything the database itself knows (``asking``,
-    ``was_interrupted``, ``is_running``, ``unread``), which is enough to mirror
-    :meth:`StateStore.resolve`'s priority order minus the two hook-only states
-    (``needs_approval``-from-a-pending-tool-call and ``error``) that have no
-    database equivalent.
-
-    Returns ``None`` when nothing in the section wants attention, so the
-    caller can fall back to the plain resting colour.
-    """
-    any_asking = any(s.asking for s in sessions)
-    if any_asking:
-        return NEEDS_APPROVAL
-    if any(s.was_interrupted for s in sessions):
-        return INTERRUPTED
-    if any(s.is_running for s in sessions):
-        return WORKING
-    if any(s.unread for s in sessions):
-        return UNREAD
-    return None

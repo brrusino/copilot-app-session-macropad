@@ -328,6 +328,23 @@ def test_elsewhere_attention_ignores_the_current_section(daemon):
     assert daemon._elsewhere_attention_state() == "action"
 
 
+def test_elsewhere_attention_retires_an_answered_question_like_a_key_would(daemon):
+    """The database still says agent_asking long after you answered; on a key
+    a hook retires that. The elsewhere key blinked orange for a session that
+    was plainly working because it read the raw database flag instead."""
+    pinned = Section(name="Pinned", sessions=(session(0),))
+    other = Section(name="Other", sessions=(session(1, asking=True, asking_at=1.0, is_running=True),))
+    daemon._sections = [pinned, other]
+    daemon._section_index = 0
+    daemon.store.apply_snapshot(pinned.sessions, offscreen=daemon._offscreen_sessions())
+    assert daemon._elsewhere_attention_state() == "needs_approval"
+
+    daemon.store.apply_hook("userPromptSubmitted", "s-1")
+    daemon.store.apply_snapshot(pinned.sessions, offscreen=daemon._offscreen_sessions())
+
+    assert daemon._elsewhere_attention_state() == "working"
+
+
 def test_section_nav_leds_are_pushed_by_action_name(daemon):
     daemon._sections = [
         Section(name="Pinned", sessions=()),
@@ -440,7 +457,7 @@ def test_section_change_keeps_the_other_sections_hook_evidence(daemon, monkeypat
     daemon._sections = sections
     daemon._section_index = 0
     monkeypatch.setattr(daemon.db, "sections", lambda slot_count: sections)
-    daemon.store.apply_snapshot(pinned.sessions, retain=daemon._all_section_session_ids())
+    daemon.store.apply_snapshot(pinned.sessions, offscreen=daemon._offscreen_sessions())
     daemon.store.apply_hook("userPromptSubmitted", "s-0")
     assert daemon.store.slot_states()[0] == "working"
 
