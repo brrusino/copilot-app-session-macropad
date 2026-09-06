@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from .copilot_db import PinnedSession
@@ -203,8 +204,20 @@ class StateStore:
             overlay.clear()
             overlay.working_at = now
 
-    def apply_snapshot(self, sessions: list[PinnedSession], now: float | None = None) -> None:
-        """Replace the database view of the pinned slots."""
+    def apply_snapshot(
+        self,
+        sessions: list[PinnedSession],
+        now: float | None = None,
+        retain: Iterable[str] = (),
+    ) -> None:
+        """Replace the database view of the pinned slots.
+
+        ``retain`` names sessions that are off-screen but still reachable --
+        the other sections. Their hook bookkeeping must survive a section
+        change: it is the only evidence that an answered question was
+        answered, and dropping it made every switch back to a section blink
+        orange again until that session's next hook.
+        """
         self._sessions = list(sessions)[: self.slot_count]
         self._snapshot_at = time.monotonic() if now is None else now
 
@@ -231,9 +244,10 @@ class StateStore:
             else:
                 self._forget_question(session.session_id)
 
-        # Drop per-session bookkeeping for sessions that are no longer pinned,
-        # so these dicts cannot grow without bound over a long uptime.
+        # Drop per-session bookkeeping for sessions that are no longer pinned
+        # anywhere, so these dicts cannot grow without bound over a long uptime.
         live = {s.session_id for s in self._sessions if s.session_id}
+        live.update(s for s in retain if s)
         for store in (self._overlays, self._last_running_at, self._last_activity):
             for session_id in [k for k in store if k not in live]:
                 del store[session_id]

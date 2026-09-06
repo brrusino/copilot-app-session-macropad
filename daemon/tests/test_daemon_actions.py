@@ -429,6 +429,27 @@ def test_section_change_rereads_the_database(daemon, monkeypatch):
     assert daemon.store.slot_states()[0] == "working"
 
 
+def test_section_change_keeps_the_other_sections_hook_evidence(daemon, monkeypatch):
+    """A question retired by a hook must stay retired across a round trip
+    through another section. Pruning the off-screen session's overlay made
+    the stale agent_asking win again on every switch back, so the key blinked
+    orange until that session's next hook."""
+    pinned = Section(name="Pinned", sessions=(session(0, asking=True, asking_at=1.0),))
+    group = Section(name="Group A", sessions=(session(1),))
+    sections = [pinned, group]
+    daemon._sections = sections
+    daemon._section_index = 0
+    monkeypatch.setattr(daemon.db, "sections", lambda slot_count: sections)
+    daemon.store.apply_snapshot(pinned.sessions, retain=daemon._all_section_session_ids())
+    daemon.store.apply_hook("userPromptSubmitted", "s-0")
+    assert daemon.store.slot_states()[0] == "working"
+
+    daemon._run_action("section_down")
+    daemon._run_action("section_up")
+
+    assert daemon.store.slot_states()[0] == "working"
+
+
 def test_status_reports_the_current_section_and_key_colours(tmp_path, capsys):
     """--status must show the same section info the LEDs would, since that's
     what it exists for when there is no pad plugged in to read."""

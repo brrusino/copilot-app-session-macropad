@@ -384,7 +384,7 @@ class Daemon:
             self._section_index + 1,
             len(self._sections),
         )
-        self.store.apply_snapshot(section.sessions)
+        self.store.apply_snapshot(section.sessions, retain=self._all_section_session_ids())
         self._push_states()
         self._push_section_leds()
         # The LEDs are the feedback for the tap, so they go first. Re-caching
@@ -397,6 +397,15 @@ class Daemon:
             name="macropad-warm",
             daemon=True,
         ).start()
+
+    def _all_section_session_ids(self) -> set[str]:
+        """Every session reachable from any section, on screen or not."""
+        return {
+            s.session_id
+            for section in self._sections
+            for s in section.sessions
+            if s.session_id
+        }
 
     def _section_indicator_state(self) -> str:
         """LED state name for the section-indicator key (``section_up``,
@@ -483,7 +492,7 @@ class Daemon:
         else:
             self._section_index = 0
         sessions = self._sections[self._section_index].sessions if self._sections else ()
-        self.store.apply_snapshot(sessions)
+        self.store.apply_snapshot(sessions, retain=self._all_section_session_ids())
         actions.warm_session_controls(
             (session.workspace_id, session.session_id) for session in sessions
         )
