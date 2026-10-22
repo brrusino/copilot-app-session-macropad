@@ -437,10 +437,10 @@ class Daemon:
 
     @_synchronized
     def _change_section(self, delta: int) -> None:
-        """Move rows 1-2 to the previous/next section. A no-op at either end.
+        """Move rows 1-2 to the previous/next section, wrapping at either end.
 
-        Sections do not wrap: stepping past the last one, or before the
-        first, leaves the current section exactly where it was.
+        With only a couple of sections, stopping at the ends made most presses
+        do nothing visible, which read as a broken key.
         """
         if self._children_root_id is not None:
             if delta < 0:
@@ -458,10 +458,9 @@ class Daemon:
             return
         if not self._sections:
             return
-        new_index = self._section_index + delta
-        if not (0 <= new_index < len(self._sections)):
+        if len(self._sections) < 2:
             return
-        self._section_index = new_index
+        self._section_index = (self._section_index + delta) % len(self._sections)
         # Re-read rather than reuse the last reconcile's snapshot: that copy
         # can be seconds old, and re-applying it resurrected child questions
         # and unread flags that had since cleared -- a burst of orange and

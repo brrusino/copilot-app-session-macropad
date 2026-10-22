@@ -278,7 +278,7 @@ def test_no_levels_configured_pushes_nothing(daemon, monkeypatch):
 # --- sections: navigation, colours, and the two section-nav LEDs -----------
 # Row 3 key 1 ("section_up") steps back and names the section on screen;
 # row 3 key 2 ("section_down") steps forward and rolls up attention from every
-# OTHER section. Neither wraps at a boundary.
+# OTHER section. Both wrap at the ends; the children page does not.
 
 
 def test_section_indicator_is_the_resting_colour_on_pinned(daemon):
@@ -422,12 +422,23 @@ def test_change_section_steps_forward_and_back(daemon):
     assert daemon.store.session_for_slot(0).name == "session 0"
 
 
-def test_change_section_does_not_wrap_past_either_end(daemon):
-    daemon._sections = [Section(name="Pinned", sessions=(session(0),))]
+def test_change_section_wraps_at_either_end(daemon):
+    daemon._sections = [
+        Section(name="Pinned", sessions=(session(0),)),
+        Section(name="Group A", sessions=()),
+    ]
     daemon._section_index = 0
 
     daemon._change_section(-1)
+    assert daemon._section_index == 1
+
+    daemon._change_section(1)
     assert daemon._section_index == 0
+
+
+def test_change_section_with_one_section_stays_put(daemon):
+    daemon._sections = [Section(name="Pinned", sessions=(session(0),))]
+    daemon._section_index = 0
 
     daemon._change_section(1)
     assert daemon._section_index == 0

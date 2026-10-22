@@ -614,8 +614,8 @@ chords with no session logic, so routing them through the daemon would only
 add latency and a dependency on it being up.
 
 **Section up/down move rows 1-2 through your sections.** See
-[Sections and groups](#sections-and-groups) below. Sections don't wrap: at
-either end, the boundary key is just a no-op.
+[Sections and groups](#sections-and-groups) below. Sections wrap at either
+end, so every press switches the page even with only two sections.
 
 **Section up's LED names the section you're on**, not attention: "Pinned"
 uses the plain resting colour, and every group after it gets its own solid
