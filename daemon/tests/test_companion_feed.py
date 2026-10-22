@@ -12,6 +12,24 @@ from macropad_daemon import companion_feed as companion
 from macropad_daemon.companion_feed import CompanionFeed, discover, parse_snapshot
 
 
+def test_reconnect_replays_the_current_revision_and_notifies_disconnect():
+    received, disconnected = [], []
+    feed = CompanionFeed(received.append, on_disconnect=lambda: disconnected.append(True))
+    snapshot = parse_snapshot({
+        "type": "snapshot", "instanceId": "app", "revision": 1,
+    })
+    feed._connected.set()
+    feed._accept_snapshot(snapshot)
+    feed._disconnect()
+    feed._disconnect()
+    assert disconnected == [True]
+    assert not feed.connected
+    assert feed.latest is snapshot
+    feed._connected.set()
+    assert feed._accept_snapshot(snapshot, replay=True)
+    assert len(received) == 2
+
+
 def snapshot_message(revision=1, instance="instance-a"):
     return {
         "type": "snapshot", "protocolVersion": "1", "instanceId": instance,

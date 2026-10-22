@@ -1,26 +1,10 @@
 # SPDX-License-Identifier: MIT
-"""Slot state resolution: merges the hook push feed with the database snapshot.
+"""Feed-first session status and workstream rollup.
 
-Neither source is sufficient alone:
-
-* **Hooks** are instant and precise about agent activity (``userPromptSubmitted``
-  -> working, ``agentStop`` -> done, ``permissionRequest`` -> needs approval,
-  ``errorOccurred`` -> error) but they cannot see *you*. Reading a session clears
-  its unread badge inside the app and no hook fires.
-* **The database** is authoritative for unread and pin order, but we only observe
-  it on a poll, so it lags a fast agent by up to one reconcile interval.
-
-Conflict rule
--------------
-The database is authoritative for whether a session is *still running*; hooks
-may only make the pad react faster to work **starting**, never contradict the
-app into idle. ``agentStop`` fires at the end of every agent turn, but a session
-working through a long task stays ``is_running`` across many turns -- so letting
-the newer hook win made the LED flap blue/white once per turn while the app's
-own flag never changed at all.
-
-Everything hooks alone can see -- an approval prompt, an error, output you have
-not read yet -- is theirs outright, because the database has no equivalent.
+The DB supplies structure. A connected companion item owns its own status;
+missing items and disconnections use the original DB/hook resolver. Descendants
+keep their identities throughout resolution, so an answered child question
+cannot get latched onto its parent.
 """
 
 from __future__ import annotations
@@ -30,7 +14,8 @@ import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
-from .copilot_db import PinnedSession
+from .copilot_db import CopilotDB, PinnedSession
+from .companion_feed import NavigationItem, Snapshot
 
 log = logging.getLogger("macropad")
 
@@ -43,8 +28,12 @@ UNREAD = "unread"
 NEEDS_APPROVAL = "needs_approval"
 INTERRUPTED = "interrupted"
 ERROR = "error"
+MERGE_READY = "merge_ready"
+PAUSED = "paused"
 
-ALL_STATES = (EMPTY, IDLE, WORKING, UNREAD, NEEDS_APPROVAL, INTERRUPTED, ERROR)
+ALL_STATES = (EMPTY, IDLE, WORKING, UNREAD, NEEDS_APPROVAL, INTERRUPTED, ERROR, MERGE_READY, PAUSED)
+ROLLUP_PRIORITY = (NEEDS_APPROVAL, ERROR, INTERRUPTED, WORKING)
+ATTENTION_PRIORITY = (NEEDS_APPROVAL, ERROR, INTERRUPTED, UNREAD)
 
 #: How long a session keeps showing "working" after ``is_running`` goes false.
 #:
@@ -125,8 +114,35 @@ class StateStore:
     _question_activity: dict[tuple, int] = field(default_factory=dict)
     #: Last activity counter seen per session, so a change can be spotted.
     _last_activity: dict[str, int] = field(default_factory=dict)
+    _feed_items: dict[str, NavigationItem] = field(default_factory=dict)
+    _feed_question_at: dict[str, float] = field(default_factory=dict)
+    _roots: list[PinnedSession] = field(default_factory=list)
+    children_page: bool = False
 
     # -- inputs ----------------------------------------------------------
+
+    @staticmethod
+    def feed_items(snapshot: Snapshot) -> dict[str, NavigationItem]:
+        return {
+            item.id: item
+            for collection in (snapshot.root, *snapshot.collections.values())
+            for item in collection.items
+            if item.kind in ("workspace", "chat") and item.id
+        }
+
+    def apply_feed(self, snapshot: Snapshot | None) -> None:
+        items = self.feed_items(snapshot) if snapshot is not None else {}
+        when = 0.0
+        if snapshot is not None:
+            when = CopilotDB._as_epoch(snapshot.generated_at) or time.time()
+        questions = {
+            sid for sid, item in items.items()
+            if self._feed_state(item) == NEEDS_APPROVAL
+        }
+        self._feed_question_at = {
+            sid: self._feed_question_at.get(sid, when) for sid in questions
+        }
+        self._feed_items = items
 
     def overlay_for(self, session_id: str) -> SessionOverlay:
         overlay = self._overlays.get(session_id)
@@ -209,6 +225,7 @@ class StateStore:
         sessions: list[PinnedSession],
         now: float | None = None,
         offscreen: Iterable[PinnedSession] = (),
+        roots: Iterable[PinnedSession] | None = None,
     ) -> None:
         """Replace the database view of the pinned slots.
 
@@ -221,11 +238,18 @@ class StateStore:
         answered question was answered, and dropping it made every switch
         back to a section blink orange again until that session's next hook.
         """
-        self._sessions = list(sessions)[: self.slot_count]
+        sessions = list(sessions)
+        self._sessions = sessions[: self.slot_count]
         self._snapshot_at = time.monotonic() if now is None else now
 
         offscreen = list(offscreen)
-        for session in (*self._sessions, *offscreen):
+        all_roots = [*sessions, *offscreen]
+        self._roots = list(roots) if roots is not None else all_roots
+        all_sessions = {
+            node.session_id: node
+            for root in all_roots for node in (root, *root.descendants())
+        }
+        for session in all_sessions.values():
             if not session.session_id:
                 continue
             if session.is_running:
@@ -250,7 +274,7 @@ class StateStore:
 
         # Drop per-session bookkeeping for sessions that are no longer pinned
         # anywhere, so these dicts cannot grow without bound over a long uptime.
-        live = {s.session_id for s in (*self._sessions, *offscreen) if s.session_id}
+        live = {s for s in all_sessions if s}
         for store in (self._overlays, self._last_running_at, self._last_activity):
             for session_id in [k for k in store if k not in live]:
                 del store[session_id]
@@ -261,15 +285,59 @@ class StateStore:
 
     # -- outputs ---------------------------------------------------------
 
+    def select_view(
+        self, sessions: Iterable[PinnedSession], roots: Iterable[PinnedSession],
+    ) -> None:
+        """Change pages without treating cached DB values as fresh evidence."""
+        self._sessions = list(sessions)[:self.slot_count]
+        self._roots = list(roots)
+
     def session_for_slot(self, slot: int) -> PinnedSession | None:
         if 0 <= slot < len(self._sessions):
             return self._sessions[slot]
         return None
 
     def resolve(self, session: PinnedSession | None) -> str:
-        """Decide the single state string for one slot."""
+        """Workstream state: urgent descendant states, then own unread/state."""
+        own = self.resolve_self(session)
+        if session is None:
+            return own
+        if self.children_page:
+            return self.child_page_state(session)
+        states = {own, *(self.resolve_self(child) for child in session.descendants())}
+        for state in ROLLUP_PRIORITY:
+            if state in states:
+                return state
+        return own
+
+    def child_page_state(self, session: PinnedSession) -> str:
+        state = self.resolve_self(session)
+        return IDLE if session.watched and state == UNREAD else state
+
+    @staticmethod
+    def _feed_state(item: NavigationItem) -> str | None:
+        if item.status == "attention":
+            # Verified live: attention + needs_input matched agent_asking.
+            # Don't assume a future, differently indicated attention is a
+            # question (e.g. a merge badge).
+            return NEEDS_APPROVAL if item.indicator_kind == "needs_input" else None
+        return {
+            "needs_input": NEEDS_APPROVAL, "error": ERROR,
+            "interrupted": INTERRUPTED, "running": WORKING,
+            "unread": UNREAD, "idle": IDLE,
+            "merge_ready": MERGE_READY, "paused": PAUSED,
+        }.get(item.status)
+
+    def resolve_self(self, session: PinnedSession | None) -> str:
+        """Resolve one session, never attributing a child's status to it."""
         if session is None or session.session_id is None:
             return EMPTY
+
+        item = self._feed_items.get(session.session_id)
+        if item is not None:
+            state = self._feed_state(item)
+            if state is not None:
+                return state
 
         overlay = self._overlays.get(session.session_id)
 
@@ -420,11 +488,54 @@ class StateStore:
         ``offscreen``. Returns ``None`` when nothing wants attention, so the
         caller can fall back to the plain resting colour.
         """
-        states = {self.resolve(session) for session in sessions}
+        # This is always workstream rollup, even while a children page shows
+        # individual self states.
+        states = set()
+        for session in sessions:
+            own = self.resolve_self(session)
+            subtree = {own, *(self.resolve_self(child) for child in session.descendants())}
+            states.add(next((s for s in ROLLUP_PRIORITY if s in subtree), own))
         for wanted in (NEEDS_APPROVAL, ERROR, INTERRUPTED, WORKING, UNREAD):
             if wanted in states:
                 return wanted
         return None
+
+    def _attention_key(self, session: PinnedSession) -> tuple[int, float]:
+        state = self.resolve_self(session)
+        when = session.asking_at or self._feed_question_at.get(session.session_id, 0.0)
+        overlay = self._overlays.get(session.session_id)
+        if not when and overlay and overlay.pending_approval:
+            when = time.time() - (time.monotonic() - overlay.pending_approval_at)
+        return ATTENTION_PRIORITY.index(state), when if state == NEEDS_APPROVAL else 0.0
+
+    def tap_target(self, session: PinnedSession) -> PinnedSession:
+        blocked = [
+            child for child in session.descendants()
+            if self.resolve_self(child) in ATTENTION_PRIORITY[:3]
+        ]
+        return min(blocked, key=self._attention_key) if blocked else session
+
+    def attention_sessions(self) -> list[PinnedSession]:
+        """Across all sections; watched unread belongs to the coordinator."""
+        seen = set()
+        candidates = []
+        for root in self._roots:
+            for node in (root, *root.descendants()):
+                if not node.session_id or node.session_id in seen:
+                    continue
+                seen.add(node.session_id)
+                state = self.resolve_self(node)
+                if state in ATTENTION_PRIORITY and not (node.watched and state == UNREAD):
+                    candidates.append(node)
+        return sorted(candidates, key=self._attention_key)
+
+    def next_attention(self, after: str | None = None) -> PinnedSession | None:
+        candidates = self.attention_sessions()
+        if not candidates:
+            return None
+        ids = [s.session_id for s in candidates]
+        index = (ids.index(after) + 1) % len(ids) if after in ids else 0
+        return candidates[index]
 
     def slot_states(self) -> list[str]:
         """State string per slot, padded to ``slot_count`` with ``empty``."""
@@ -443,7 +554,7 @@ class StateStore:
         gets more useful as the number of live sessions grows.
         """
         states = self.slot_states()
-        order = (NEEDS_APPROVAL, ERROR, UNREAD)
+        order = ATTENTION_PRIORITY
         start = 0 if after is None else (after + 1) % self.slot_count
         rotation = [(start + i) % self.slot_count for i in range(self.slot_count)]
 

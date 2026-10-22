@@ -585,7 +585,9 @@ def test_the_press_event_leaves_exact_parent_selection_to_the_daemon(firmware):
     sent = []
     firmware._send = lambda msg: sent.append(msg)
     firmware._on_down(fw_config.SESSION_KEYS[0], 0.0)
-    assert sent and "typed" not in sent[-1]
+    assert sent == []
+    firmware._on_up(fw_config.SESSION_KEYS[0], 0.05)
+    assert sent[0]["t"] == "down" and "typed" not in sent[0]
 
 
 def test_a_failed_keystroke_leaves_the_host_to_do_it(firmware):
@@ -600,7 +602,8 @@ def test_a_failed_keystroke_leaves_the_host_to_do_it(firmware):
     sent = []
     firmware._send = lambda msg: sent.append(msg)
     firmware._on_down(fw_config.SESSION_KEYS[0], 0.0)
-    assert sent and "typed" not in sent[-1]
+    firmware._on_up(fw_config.SESSION_KEYS[0], 0.05)
+    assert sent and "typed" not in sent[0]
 
 
 def test_legacy_shortcuts_can_still_be_enabled(firmware, monkeypatch):
@@ -608,8 +611,59 @@ def test_legacy_shortcuts_can_still_be_enabled(firmware, monkeypatch):
 
     monkeypatch.setattr(firmware, "_SEND_SHORTCUTS", True)
     firmware._on_down(fw_config.SESSION_KEYS[0], 0.0)
+    firmware._on_up(fw_config.SESSION_KEYS[0], 0.05)
     sends = [e for e in firmware._test_keyboard.history if e[0] == "send"]
     assert sends == [("send", ("LEFT_CONTROL", 0x1E))]
+
+
+def test_session_hold_fires_once_at_the_existing_brightness_threshold(firmware):
+    key = firmware.config.SESSION_KEYS[0]
+    sent = []
+    firmware._send = sent.append
+    firmware._app_focused = False
+    firmware._on_down(key, 0.0)
+    firmware._check_session_holds(firmware._BRIGHTNESS_HOLD - 0.01)
+    assert sent == []
+    firmware._check_session_holds(firmware._BRIGHTNESS_HOLD)
+    firmware._check_session_holds(firmware._BRIGHTNESS_HOLD + 1)
+    firmware._on_up(key, firmware._BRIGHTNESS_HOLD + 2)
+    assert sent == [
+        {"t": "hold", "k": key, "role": "session", "slot": 0},
+        {"t": "up", "k": key, "role": "session", "slot": 0},
+    ]
+    assert firmware._test_keyboard.history == []
+    assert key not in firmware._press_flash
+
+
+def test_session_taps_dispatch_on_release_without_a_hold(firmware):
+    key = firmware.config.SESSION_KEYS[2]
+    sent = []
+    firmware._send = sent.append
+    firmware._on_down(key, 0.0)
+    assert sent == []
+    assert key in firmware._press_flash
+    firmware._on_up(key, 0.05)
+    assert [m["t"] for m in sent] == ["down", "up"]
+    assert all(m["slot"] == 2 for m in sent)
+
+
+def test_two_session_holds_are_independent_and_do_not_repeat_on_release(firmware):
+    first, second = firmware.config.SESSION_KEYS[:2]
+    sent = []
+    firmware._send = sent.append
+    firmware._on_down(first, 0.0)
+    firmware._on_down(second, 0.1)
+    firmware._check_session_holds(firmware._BRIGHTNESS_HOLD)
+    firmware._on_up(first, firmware._BRIGHTNESS_HOLD + 0.01)
+    firmware._on_up(second, firmware._BRIGHTNESS_HOLD + 0.2)
+    assert [m["slot"] for m in sent if m["t"] == "hold"] == [0, 1]
+    assert not any(m["t"] == "down" for m in sent)
+
+
+def test_firmware_and_daemon_agree_on_the_hold_protocol_version(firmware):
+    from macropad_daemon.main import REQUIRED_FIRMWARE
+    assert firmware.FIRMWARE_VERSION == REQUIRED_FIRMWARE == 7
+
 # --- typing a chord the host asked for ------------------------------------
 
 
@@ -662,6 +716,7 @@ def test_the_app_is_raised_first_when_it_is_not_in_front(firmware):
 
     firmware._app_focused = False
     firmware._on_down(fw_config.SESSION_KEYS[0], 0.0)
+    firmware._on_up(fw_config.SESSION_KEYS[0], 0.05)
     sends = [e for e in firmware._test_keyboard.history if e[0] == "send"]
     assert sends == [("send", ("LEFT_GUI", 0x24))]   # win+7
 
@@ -674,6 +729,7 @@ def test_the_keystroke_waits_for_the_app_to_come_forward(firmware):
     firmware._SEND_SHORTCUTS = True
     firmware._app_focused = False
     firmware._on_down(fw_config.SESSION_KEYS[2], 0.0)
+    firmware._on_up(fw_config.SESSION_KEYS[2], 0.05)
     assert firmware._pending_chords
 
     firmware._handle_message({"t": "focus", "v": True})
@@ -689,6 +745,7 @@ def test_a_stale_pending_keystroke_is_dropped(firmware):
     firmware._SEND_SHORTCUTS = True
     firmware._app_focused = False
     firmware._on_down(fw_config.SESSION_KEYS[0], 0.0)
+    firmware._on_up(fw_config.SESSION_KEYS[0], 0.05)
     assert firmware._pending_chords
 
     firmware._discard_pending()

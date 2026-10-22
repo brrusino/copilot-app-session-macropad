@@ -218,10 +218,12 @@ class CompanionFeed:
         self, on_snapshot: Callable[[Snapshot], None],
         copilot_home: str | Path | None = None,
         *, reconnect_delay: float = 0.5, max_reconnect_delay: float = 10.0,
+        on_disconnect: Callable[[], None] | None = None,
     ) -> None:
         if reconnect_delay <= 0 or max_reconnect_delay < reconnect_delay:
             raise ValueError("invalid reconnect delays")
         self._callback = on_snapshot
+        self._on_disconnect = on_disconnect
         self._home = Path(copilot_home) if copilot_home is not None else Path.home() / ".copilot"
         self._delay = reconnect_delay
         self._max_delay = max_reconnect_delay
@@ -264,13 +266,14 @@ class CompanionFeed:
     def _worker(self) -> None:
         asyncio.run(self._run())
 
-    def _accept_snapshot(self, snapshot: Snapshot) -> bool:
+    def _accept_snapshot(self, snapshot: Snapshot, *, replay: bool = False) -> bool:
         with self._lock:
             previous = self._latest
             if (
                 previous is not None
                 and snapshot.instance_id == previous.instance_id
-                and snapshot.revision <= previous.revision
+                and (snapshot.revision < previous.revision
+                     or (snapshot.revision == previous.revision and not replay))
             ):
                 return False
             self._latest = snapshot
@@ -280,6 +283,15 @@ class CompanionFeed:
             # Don't include exception text or payloads: they may contain secrets.
             log.warning("companion snapshot callback failed")
         return True
+
+    def _disconnect(self) -> None:
+        was_connected = self._connected.is_set()
+        self._connected.clear()
+        if was_connected and self._on_disconnect is not None:
+            try:
+                self._on_disconnect()
+            except Exception:
+                log.warning("companion disconnect callback failed")
 
     async def _run(self) -> None:
         with self._lock:
@@ -298,6 +310,7 @@ class CompanionFeed:
                             logger=_wire_log,
                         ) as websocket:
                             self._connected.set()
+                            first_snapshot = True
                             async for frame in websocket:
                                 if self._stopped.is_set():
                                     break
@@ -310,12 +323,13 @@ class CompanionFeed:
                                     continue
                                 if snapshot.instance_id != discovery.instance_id:
                                     continue
-                                self._accept_snapshot(snapshot)
+                                self._accept_snapshot(snapshot, replay=first_snapshot)
+                                first_snapshot = False
                                 delay = self._delay
                     except Exception:
                         log.debug("companion connection unavailable; rediscovering")
                     finally:
-                        self._connected.clear()
+                        self._disconnect()
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, self._max_delay)
         except asyncio.CancelledError:
@@ -324,4 +338,4 @@ class CompanionFeed:
             with self._lock:
                 self._loop = None
                 self._task = None
-            self._connected.clear()
+            self._disconnect()

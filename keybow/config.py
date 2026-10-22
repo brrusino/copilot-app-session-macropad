@@ -134,8 +134,8 @@ FREE_KEYS = ()
 # children open. The daemon now clicks the exact parent row by its stable
 # workspace automation id instead.
 #
-# Session keys still raise the app from the pad -- only the positional Ctrl+N
-# part is removed. Every fixed action remains firmware HID.
+# Session taps raise the app and dispatch on release. Holds open a children
+# page without focusing a session. Every fixed action remains firmware HID.
 #
 SEND_SESSION_SHORTCUTS = False
 
@@ -169,18 +169,14 @@ BRIGHTNESS_LEVELS = (0.35, 1.0, 1.6)
 
 # Hold this key to cycle BRIGHTNESS_LEVELS; tap it for its normal job.
 #
-# Every key already has a job, so a new gesture has to share one. This key is
-# the only candidate: it is the one key whose effect is decided entirely by the
-# host, from an event the pad chooses whether to send, so a hold can be kept
-# from firing it. Every other key acts the moment it goes down -- by typing a
-# chord itself, or by being a keystroke -- and a hold would fire that first.
+# The host action waits for release so holding doesn't also change sections.
 #
 # The cost is that its normal action is dispatched on release rather than on
 # press: a press cannot be told from a hold until it ends. A tap is over in
 # well under the threshold, so the added delay is the length of your own tap.
 BRIGHTNESS_KEY = ROWS[2][0]
 
-# How long BRIGHTNESS_KEY must be held to mean "change brightness".
+# Hold threshold for brightness and session-key children pages.
 #
 # Comfortably longer than a deliberate tap, short enough not to feel stuck. The
 # level changes at the moment the threshold passes rather than on release, so
@@ -216,6 +212,8 @@ PALETTE = {
     # cannot be confused with a session asking you a question.
     "interrupted":    ((66, 6, 6),      "pulse"),
     "error":          ((66, 6, 6),      "solid"),
+    "merge_ready":    ((0, 45, 45),     "solid"),
+    "paused":         ((30, 12, 45),    "solid"),
     # Shown on every session key when the host daemon is not connected.
     # Deliberately a different HUE to idle, not just dimmer: "the daemon is
     # down" and "this session is idle" are completely different situations and

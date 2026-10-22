@@ -52,7 +52,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
@@ -100,6 +100,14 @@ class PinnedSession:
     #: was installed.
     activity: int = 0
     auto_approve: bool = True
+    children: tuple[PinnedSession, ...] = ()
+    watched: bool = False
+
+    def descendants(self) -> Iterable[PinnedSession]:
+        """Live descendants in flattened sidebar order."""
+        for child in self.children:
+            yield child
+            yield from child.descendants()
 
     @property
     def focusable(self) -> bool:
@@ -339,7 +347,7 @@ class CopilotDB:
         parent_session_ids |= {s for s in pinned_chat_session_ids if s}
         children: set[str] = set()
         for r in rows:
-            for creator in (r["creator_session_id"], r["coordinating_creator_session_id"]):
+            for creator in (r["coordinating_creator_session_id"] or r["creator_session_id"],):
                 if creator and creator != r["session_id"] and creator in parent_session_ids:
                     children.add(r["id"])
                     break
@@ -370,16 +378,22 @@ class CopilotDB:
         }
         chat_parents = {s for s in pinned_chat_session_ids if s}
         for r in creator_rows:
-            for creator in (r["creator_session_id"], r["coordinating_creator_session_id"]):
+            for creator in (r["coordinating_creator_session_id"] or r["creator_session_id"],):
                 if not creator:
                     continue
                 parent_ws = session_to_workspace.get(creator)
                 if parent_ws and parent_ws != r["id"]:
+                    for bucket in mapping.values():
+                        if r["id"] in bucket:
+                            bucket.remove(r["id"])
                     bucket = mapping.setdefault(parent_ws, [])
                     if r["id"] not in bucket:
                         bucket.append(r["id"])
                     break
                 if creator in chat_parents:
+                    for bucket in mapping.values():
+                        if r["id"] in bucket:
+                            bucket.remove(r["id"])
                     bucket = mapping.setdefault(creator, [])
                     if r["id"] not in bucket:
                         bucket.append(r["id"])
@@ -437,18 +451,14 @@ class CopilotDB:
         self,
         conn: sqlite3.Connection,
         order: list[str],
-        limit: int,
+        limit: int | None,
         *,
         unread: set[str],
         children: set[str],
         child_map: dict[str, list[str]],
         asking_sessions: dict[str, float],
     ) -> list[PinnedSession]:
-        """Resolve an ordered id list (a pin list, or a group's members) to
-        the first ``limit`` sessions, applying the shared archived/child/
-        rollup rules. Shared by :meth:`pinned_sessions` and :meth:`sections`
-        so a group's slots behave exactly like the Pinned section's.
-        """
+        """Resolve roots and retain each descendant's own status for rollup."""
         if not order:
             return []
         rows = self._fetch_workspaces(conn, order)
@@ -457,9 +467,6 @@ class CopilotDB:
         unmatched = [pin for pin in order if pin not in rows]
         session_rows = self._fetch_sessions(conn, unmatched)
 
-        # A parent whose children are working IS working, so roll their
-        # activity up. Without this a session that has delegated all its
-        # work looks idle while its subagents run.
         descendants = {
             pin: self.descendants_of(child_map, pin)
             for pin in order
@@ -470,96 +477,136 @@ class CopilotDB:
             every_descendant |= ids
         descendant_rows = self._fetch_workspaces(conn, every_descendant)
 
-        def rolled_up(pin: str, own_running: bool, own_unread: bool):
-            """Fold descendant state into a pinned slot.
+        # The sidebar orders siblings by recent activity. The query retains
+        # that order even for descendants truncated out of the companion feed.
+        descendant_order = {wid: i for i, wid in enumerate(descendant_rows)}
 
-            Only states that clear themselves are rolled up. Unread is
-            deliberately **not**: the app does not mark a parent unread when a
-            child has output, and overriding it produced a green light nothing
-            could turn off -- one pin had 51 unread descendants, so clearing it
-            by hand meant opening 51 child sessions. Work and questions are
-            different: work stops on its own, and a question is answered from
-            the parent.
-            """
-            running, has_unread = own_running, own_unread
-            asking_at = 0.0
-            interrupted = False
-            for child in descendants.get(pin, ()):
-                row = descendant_rows.get(child)
-                if row is None or row["workspace_archived_at"] is not None:
+        def child_sessions(parent: str, path: set[str]):
+            result = []
+            for wid in sorted(child_map.get(parent, ()), key=lambda w: descendant_order.get(w, 0)):
+                if wid in path:
                     continue
-                if row["is_running"]:
-                    running = True
-                asking_at = max(asking_at, asking_sessions.get(row["session_id"], 0.0))
-                if row["was_interrupted"]:
-                    interrupted = True
-            return running, has_unread, asking_at, interrupted
+                row = descendant_rows.get(wid)
+                if row is None or row["workspace_archived_at"] is not None or row["session_archived_at"] is not None:
+                    continue
+                result.append(self._workspace_session(
+                    row, len(result), unread, asking_sessions,
+                    children=tuple(child_sessions(wid, path | {wid})),
+                ))
+            return result
 
         resolved: list[PinnedSession] = []
         for pin in order:
-            if len(resolved) >= limit:
+            if limit is not None and len(resolved) >= limit:
                 break
             if pin in children:
                 continue
 
             row = rows.get(pin)
             if row is not None:
-                if row["workspace_archived_at"] is not None:
+                if row["workspace_archived_at"] is not None or row["session_archived_at"] is not None:
                     continue
-                running, has_unread, child_asking_at, child_interrupted = rolled_up(
-                    pin, bool(row["is_running"]), pin in unread
-                )
-                asking_at = max(
-                    asking_sessions.get(row["session_id"], 0.0), child_asking_at
-                )
-                resolved.append(
-                    PinnedSession(
-                        slot=len(resolved),
-                        workspace_id=pin,
-                        session_id=row["session_id"],
-                        name=row["workspace_name"] or row["session_title"] or "(untitled)",
-                        is_running=running,
-                        unread=has_unread,
-                        was_interrupted=bool(row["was_interrupted"]) or child_interrupted,
-                        asking=asking_at > 0.0,
-                        asking_at=asking_at,
-                        activity=int(row["activity"] or 0),
-                        auto_approve=bool(row["auto_approve"]),
-                    )
-                )
+                resolved.append(self._workspace_session(
+                    row, len(resolved), unread, asking_sessions,
+                    children=tuple(child_sessions(pin, {pin})),
+                ))
                 continue
 
             session = session_rows.get(pin)
             if session is None or session["archived_at"] is not None:
                 continue
-            # A pinned chat session can be a parent too, via creator_session_id
-            # naming its own session id -- a workspace_parent_links parent was
-            # always a workspace, but this new linkage has no such limit.
-            running, has_unread, child_asking_at, child_interrupted = rolled_up(
-                pin, bool(session["is_running"]), pin in unread
-            )
-            asking_at = max(asking_sessions.get(pin, 0.0), child_asking_at)
+            asking_at = asking_sessions.get(pin, 0.0)
             resolved.append(
                 PinnedSession(
                     slot=len(resolved),
                     workspace_id=None,
                     session_id=pin,
                     name=session["title"] or "(untitled)",
-                    is_running=running,
-                    unread=has_unread,
-                    was_interrupted=bool(session["was_interrupted"]) or child_interrupted,
+                    is_running=bool(session["is_running"]),
+                    unread=pin in unread,
+                    was_interrupted=bool(session["was_interrupted"]),
                     asking=asking_at > 0.0,
                     asking_at=asking_at,
                     activity=int(session["activity"] or 0),
                     auto_approve=bool(session["auto_approve"]),
+                    children=tuple(child_sessions(pin, {pin})),
                 )
             )
-        return resolved
+        return [self._watch_tree(root, descendant_rows) for root in resolved]
+
+    @staticmethod
+    def _watch_tree(root: PinnedSession, rows) -> PinnedSession:
+        live_ids = {s.session_id for s in (root, *root.descendants()) if s.session_id}
+
+        def mark(node, ancestors=()):
+            row = rows.get(node.workspace_id)
+            watched = bool(ancestors and row is not None and (
+                row["notify_creator_on_idle"]
+                or row["notification_recipient_session_id"] in live_ids - {node.session_id}
+                or row["coordinating_creator_session_id"] in live_ids - {node.session_id}
+            ))
+            lineage = (*ancestors, node.session_id) if node.session_id else ancestors
+            return replace(node, watched=watched,
+                           children=tuple(mark(c, lineage) for c in node.children))
+
+        return mark(root)
+
+    @staticmethod
+    def _workspace_session(row, slot, unread, asking_sessions, **kwargs) -> PinnedSession:
+        asking_at = asking_sessions.get(row["session_id"], 0.0)
+        return PinnedSession(
+            slot=slot, workspace_id=row["workspace_id"], session_id=row["session_id"],
+            name=row["workspace_name"] or row["session_title"] or "(untitled)",
+            is_running=bool(row["is_running"]),
+            unread=row["workspace_id"] in unread or row["session_id"] in unread,
+            was_interrupted=bool(row["was_interrupted"]),
+            asking=asking_at > 0.0, asking_at=asking_at,
+            activity=int(row["activity"] or 0), auto_approve=bool(row["auto_approve"]),
+            **kwargs,
+        )
+
+    def refresh_status(self, sections: list[Section]) -> list[Section]:
+        """Refresh fallback status without rebuilding pins or parent links."""
+        nodes = [node for sec in sections for root in sec.sessions
+                 for node in (root, *root.descendants())]
+        with self._connect() as conn:
+            rows = self._fetch_workspaces(conn, {s.workspace_id for s in nodes if s.workspace_id})
+            chats = self._fetch_sessions(conn, {s.session_id for s in nodes if not s.workspace_id})
+            unread = self.unread_workspace_ids(conn)
+            asking = self._asking_session_ids(conn)
+            sidebar_order = {wid: i for i, wid in enumerate(rows)}
+
+            def refresh(node):
+                children = tuple(sorted(
+                    (c for child in node.children if (c := refresh(child)) is not None),
+                    key=lambda c: sidebar_order.get(c.workspace_id, 0),
+                ))
+                if node.workspace_id:
+                    row = rows.get(node.workspace_id)
+                    if row is None or row["workspace_archived_at"] is not None or row["session_archived_at"] is not None:
+                        return None
+                    return self._workspace_session(
+                        row, node.slot, unread, asking, children=children, watched=node.watched,
+                    )
+                row = chats.get(node.session_id)
+                if row is None or row["archived_at"] is not None:
+                    return None
+                when = asking.get(node.session_id, 0.0)
+                return replace(
+                    node, children=children, is_running=bool(row["is_running"]),
+                    unread=node.session_id in unread, was_interrupted=bool(row["was_interrupted"]),
+                    asking=when > 0, asking_at=when, activity=int(row["activity"] or 0),
+                    auto_approve=bool(row["auto_approve"]),
+                )
+
+            return [Section(sec.name, tuple(self._watch_tree(s, rows) for root in sec.sessions if (s := refresh(root)) is not None))
+                    for sec in sections]
 
     def _section_inputs(self, conn: sqlite3.Connection):
         """The per-connection resources every section resolves against."""
         unread = self.unread_workspace_ids(conn)
-        pinned_chat_ids = self._pinned_chat_session_ids(conn)
+        candidates = {*self.pinned_workspace_ids(conn), *self.grouped_member_ids(conn)}
+        pinned_chat_ids = candidates - self._fetch_workspaces(conn, candidates).keys()
         children = self.child_workspace_ids(conn, pinned_chat_ids)
         child_map = self._child_map(conn, pinned_chat_ids)
         asking_sessions = self._asking_session_ids(conn)
@@ -601,7 +648,7 @@ class CopilotDB:
                 asking_sessions=asking_sessions,
             )
 
-    def sections(self, limit: int) -> list[Section]:
+    def sections(self, limit: int | None = None) -> list[Section]:
         """Every section the sidebar shows: "Pinned", then one per group.
 
         Mirrors :meth:`pinned_sessions` for section 0, then resolves each
@@ -731,6 +778,12 @@ class CopilotDB:
         if not ids:
             return {}
         placeholders = ",".join("?" * len(ids))
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(workspaces)")}
+        optional = ", ".join(
+            f"w.{name}" if name in columns else f"NULL AS {name}"
+            for name in ("notify_creator_on_idle", "notification_recipient_session_id",
+                         "coordinating_creator_session_id")
+        )
         sql = f"""
             SELECT
                 w.id                AS workspace_id,
@@ -743,9 +796,11 @@ class CopilotDB:
                 s.was_interrupted   AS was_interrupted,
                 s.auto_approve      AS auto_approve,
                 {ACTIVITY_SUM}      AS activity,
-                s.archived_at       AS session_archived_at
+                s.archived_at       AS session_archived_at,
+                {optional}
             FROM workspaces w
             LEFT JOIN sessions s ON s.id = w.session_id
             WHERE w.id IN ({placeholders})
+            ORDER BY w.updated_at DESC, w.rowid
         """
         return {row["workspace_id"]: row for row in conn.execute(sql, ids)}

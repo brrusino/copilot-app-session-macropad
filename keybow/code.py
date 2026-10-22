@@ -50,7 +50,8 @@ import config
 #:     (host sets the two section-nav keys' LED state by action name, since
 #:     the host never has its own copy of the physical key map)
 #: 6 - row 3 key 1 is section_up (previous), key 2 is section_down (next)
-FIRMWARE_VERSION = 6
+#: 7 - session taps dispatch on release; holds report a children-page gesture
+FIRMWARE_VERSION = 7
 SLOT_COUNT = len(config.SESSION_KEYS)
 
 keybow = PMK(Hardware())
@@ -320,6 +321,8 @@ _BRIGHTNESS_HOLD = float(getattr(config, "BRIGHTNESS_HOLD_SECS", 0.6))
 #: zero at boot, so a real timestamp can be falsy.
 _brightness_down_at = None
 _brightness_fired = False
+_session_down_at = {}
+_session_held = set()
 
 
 def _cycle_brightness():
@@ -694,12 +697,18 @@ def _on_down(key_number, now):
         # session takes several seconds, and a brief blip leaves you unsure
         # whether the press registered at all.
         _press_flash[key_number] = now + _PRESS_FLASH_MAX
-        if not _SEND_SHORTCUTS and not _app_focused and _FOCUS_CHORD:
-            # The daemon owns exact parent selection, but it still cannot raise
-            # a background window. The pad is the physical input source, so it
-            # keeps this one part of the old path.
-            _type_all((_FOCUS_CHORD,))
+        _session_down_at[key_number] = now
+        _session_held.discard(key_number)
+        return
 
+    event = {"t": "down", "k": key_number}
+    event.update(_describe(key_number))
+    _send(event)
+
+
+def _session_tap(key_number, now):
+    if not _SEND_SHORTCUTS and not _app_focused and _FOCUS_CHORD:
+        _type_all((_FOCUS_CHORD,))
     typed = False
     if _SEND_SHORTCUTS:
         digit = _shortcut_for(key_number)
@@ -717,6 +726,16 @@ def _on_down(key_number, now):
         event["typed"] = True
     event.update(_describe(key_number))
     _send(event)
+
+
+def _check_session_holds(now):
+    for key_number, down_at in _session_down_at.items():
+        if key_number not in _session_held and now - down_at >= _BRIGHTNESS_HOLD:
+            _session_held.add(key_number)
+            _press_flash.pop(key_number, None)
+            event = {"t": "hold", "k": key_number}
+            event.update(_describe(key_number))
+            _send(event)
 
 
 def _check_brightness_hold(now):
@@ -742,6 +761,13 @@ def _on_up(key_number, now):
         # Release only once BOTH keys are up.
         if not _dictation_down:
             _release_chord()
+    elif key_number in config.SESSION_KEYS and key_number in _session_down_at:
+        _check_session_holds(now)
+        _session_down_at.pop(key_number, None)
+        if key_number not in _session_held:
+            _press_flash[key_number] = now + _PRESS_FLASH_MAX
+            _session_tap(key_number, now)
+        _session_held.discard(key_number)
     elif key_number == _BRIGHTNESS_KEY and _brightness_down_at is not None:
         _brightness_down_at = None
         if not _brightness_fired:
@@ -794,6 +820,7 @@ def main():
 
         _drain_type_queue(now)
         _check_brightness_hold(now)
+        _check_session_holds(now)
 
         if now - _last_heartbeat >= config.HEARTBEAT_INTERVAL:
             # Carry the firmware version on every heartbeat, not just the

@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: MIT
 """Daemon entry point.
 
-Wires the four moving parts together:
+Wires the status, structure and hardware paths together:
 
+* :mod:`.companion_feed` pushes the app's live status.
 * :mod:`.hook_server` receives push events from the Copilot CLI hooks.
 * :mod:`.copilot_db` reconciles against the app's own state, read-only.
-* :mod:`.state` merges those two into one state string per LED slot.
+* :mod:`.state` resolves each workstream, with DB/hooks as fallback.
 * :mod:`.serial_link` carries states to the pad and key events back.
 
 Useful without hardware::
@@ -23,11 +24,13 @@ import logging
 import sys
 import threading
 import time
+from functools import wraps
 from logging.handlers import RotatingFileHandler
 
 from . import config as config_module
 from . import actions, hooks_install
 from .copilot_db import CopilotDB
+from .companion_feed import CompanionFeed, Snapshot
 from .hook_server import PortInUseError
 from .state import StateStore
 
@@ -50,12 +53,21 @@ NAVIGATION_TIMEOUT = 3.0
 #: Pad protocol version this daemon needs. Bumped alongside
 #: ``FIRMWARE_VERSION`` in keybow/code.py whenever the daemon starts relying on
 #: a message an older pad would silently ignore.
-REQUIRED_FIRMWARE = 6
+REQUIRED_FIRMWARE = 7
+
+
+def _synchronized(method):
+    @wraps(method)
+    def locked(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return locked
 
 
 class Daemon:
     def __init__(self, cfg: config_module.Config) -> None:
         self.cfg = cfg
+        self._lock = threading.RLock()
         self.db = CopilotDB(cfg.db_path)
         self.store = StateStore(slot_count=cfg.slot_count)
         self.link = self._build_link(cfg)
@@ -67,16 +79,13 @@ class Daemon:
         #: Session key most recently pressed, used to target actions that need
         #: a subject (interrupt) without guessing.
         self._last_session_slot: int | None = None
-        #: Where the attention key last landed, so repeated presses walk the
-        #: list rather than sticking on the first match.
-        self._last_attention_slot: int | None = None
         #: Pad protocol version, learned from its hello or heartbeat.
         self._pad_firmware: int | None = None
         #: Whether the app was frontmost at the last check, so the pad is only
         #: told when it changes.
         self._app_focused: bool | None = None
         #: The current sidebar sections ("Pinned", then one per explicit
-        #: group), refreshed every reconcile. Rows 1-2 show whichever section
+        #: group). Rows 1-2 show whichever section
         #: ``_section_index`` currently points at.
         self._sections: list = []
         #: Index into ``_sections``. Starts at 0 ("Pinned") and is clamped
@@ -85,6 +94,17 @@ class Daemon:
         #: Last action_states payload sent, so a repeat reconcile with nothing
         #: to report does not resend the same two LED states every tick.
         self._last_section_states: dict | None = None
+        self._structure_loaded = False
+        self._seen_feed_ids: set[str] = set()
+        self._feed_layout: tuple | None = None
+        self._feed_snapshot: Snapshot | None = None
+        self._last_attention_id: str | None = None
+        self._children_root_id: str | None = None
+        self._children_page = 0
+        self.feed = CompanionFeed(
+            self._on_feed_snapshot, cfg.copilot_home,
+            on_disconnect=self._on_feed_disconnect,
+        )
 
     def _build_link(self, cfg: config_module.Config):
         """Pick the pad transport.
@@ -140,13 +160,80 @@ class Daemon:
 
     # -- inputs ----------------------------------------------------------
 
+    @_synchronized
     def _on_hook(self, event_type: str, session_id: str, payload: dict) -> None:
         log.debug("hook %s session=%s", event_type, session_id[:8] if session_id else "?")
         self.store.apply_hook(event_type, session_id)
         # Hooks are the low-latency path; push straight away rather than
         # waiting for the next reconcile tick.
+        if self._sections:
+            self._apply_view()
         self._push_states()
+        self._push_section_leds()
 
+    def _read_structure(self) -> None:
+        self._sections = self.db.sections(None)
+        self._structure_loaded = True
+        if self._sections:
+            self._section_index = min(self._section_index, len(self._sections) - 1)
+        else:
+            self._section_index = 0
+        self._record_db_snapshot()
+
+    def _record_db_snapshot(self) -> None:
+        roots = [s for section in self._sections for s in section.sessions]
+        self.store.apply_snapshot([], offscreen=roots, roots=roots)
+
+    @_synchronized
+    def _on_feed_snapshot(self, snapshot: Snapshot) -> None:
+        items = self.store.feed_items(snapshot)
+        layout = tuple((key, tuple((i.kind, i.id) for i in col.items))
+                       for key, col in snapshot.collections.items())
+        # A shape change also covers reordered pins and archival; a status-only
+        # revision never rebuilds structure.
+        previous = self._feed_snapshot
+        rebuild = (
+            not self._structure_loaded or items.keys() - self._seen_feed_ids
+            or layout != self._feed_layout
+            or (previous is not None and snapshot.instance_id != previous.instance_id)
+        )
+        if rebuild:
+            self._read_structure()
+        else:
+            old_items = self.store.feed_items(previous) if previous is not None else {}
+            new_questions = {
+                sid for sid, item in items.items()
+                if self.store._feed_state(item) == "needs_approval"
+                and (sid not in old_items
+                     or self.store._feed_state(old_items[sid]) != "needs_approval")
+            }
+            if new_questions:
+                # The navigation projection has no question timestamp.
+                # Refresh those DB timestamps on a new question so oldest-first
+                # selection doesn't reuse an earlier, answered question.
+                self._sections = self.db.refresh_status(self._sections)
+                self._record_db_snapshot()
+        self._seen_feed_ids.update(items)
+        self._feed_layout = layout
+        self._feed_snapshot = snapshot
+        self.store.apply_feed(snapshot)
+        self._apply_view()
+        self._push_states()
+        self._push_section_leds()
+
+    @_synchronized
+    def _on_feed_disconnect(self) -> None:
+        self._feed_snapshot = None
+        self.store.apply_feed(None)
+        try:
+            self._read_structure()
+        except Exception:
+            log.exception("database fallback failed on companion disconnect")
+        self._apply_view()
+        self._push_states()
+        self._push_section_leds()
+
+    @_synchronized
     def _on_pad_connect(self) -> None:
         # Send the palette entries for states the pad's firmware may predate.
         # Without this a slot resolving to one of them is silently ignored by
@@ -165,7 +252,9 @@ class Daemon:
         # which is wrong as often as it is right.
         self._push_focus(force=True)
         self._last_pushed = None
+        self._last_section_states = None
         self._push_states()
+        self._push_section_leds()
 
     def _note_firmware(self, version) -> None:
         """Record the pad's protocol version, warning once if it is too old.
@@ -205,9 +294,10 @@ class Daemon:
             # started after the pad still learns it.
             self._note_firmware(message.get("fw"))
             return
+        if kind == "hold" and message.get("role") == "session":
+            self._open_children(message.get("slot"))
+            return
         if kind != "down":
-            # Releases matter only for the dictation chord, which the firmware
-            # handles entirely on its own.
             return
 
         role = message.get("role")
@@ -222,6 +312,7 @@ class Daemon:
 
     # -- actions ---------------------------------------------------------
 
+    @_synchronized
     def _activate_session(self, slot, typed_by_pad: bool = False) -> None:
         if not isinstance(slot, int):
             return
@@ -231,6 +322,7 @@ class Daemon:
             self.link.send({"t": "busy_done", "k": slot})
             return
         self._last_session_slot = slot
+        session = self.store.tap_target(session)
         if typed_by_pad:
             # Firmware before v4 still types the positional shortcut. Let that
             # complete rather than racing it with the exact click; the daemon's
@@ -239,7 +331,7 @@ class Daemon:
             target = self._await_navigation
             args = (slot, session)
         else:
-            log.info("focus exact parent slot %s -> %s", slot, session.name)
+            log.info("focus exact session slot %s -> %s", slot, session.name)
             target = self._focus_parent_session
             args = (slot, session)
         # UI Automation and navigation are off-thread so the serial/LED path is
@@ -251,9 +343,9 @@ class Daemon:
             daemon=True,
         ).start()
 
-    def _focus_parent_session(self, slot: int, session) -> None:
+    def _focus_parent_session(self, slot: int | None, session) -> None:
         # InvokePattern is semantic rather than coordinate-backed, so exact
-        # parent selection can happen while the pad's Win+<n> focus chord is
+        # session selection can happen while the pad's Win+<n> focus chord is
         # still bringing the app forward.
         collapsed_group = (
             self.db.collapsed_group_for(session.workspace_id)
@@ -269,7 +361,7 @@ class Daemon:
             actions.focus_session(session.session_id or "")
         self._await_navigation(slot, session)
 
-    def _await_navigation(self, slot: int, session) -> None:
+    def _await_navigation(self, slot: int | None, session) -> None:
         """Clear the pad's busy pulse once the app has actually navigated.
 
         Focusing takes several seconds and the duration varies, so the pad
@@ -287,24 +379,6 @@ class Daemon:
         else:
             log.warning("slot %s did not appear to focus within %.0fs", slot, NAVIGATION_TIMEOUT)
         self.link.send({"t": "busy_done", "k": slot})
-
-    def _switch_to(self, slot: int | None) -> None:
-        """Select a slot the daemon chose, rather than one you pressed.
-
-        Goes through the pad for the same reason everything else does: the pad
-        is the only thing here that can type. The deep link stays as the
-        fallback for slots past the app's single-digit shortcuts.
-        """
-        if slot is None:
-            return
-        session = self.store.session_for_slot(slot)
-        if session is None or not session.focusable:
-            return
-        self._last_session_slot = slot
-        if slot < actions.MAX_SHORTCUT_SLOT and self.link.connected:
-            self._type_chord(f"ctrl+{slot + 1}")
-        else:
-            actions.focus_session(session.session_id or "")
 
     def _type_chord(self, chord: str) -> None:
         """Have the pad type a chord.
@@ -331,16 +405,22 @@ class Daemon:
                 return slot
         return None
 
+    @_synchronized
     def _run_action(self, name: str) -> None:
         log.info("action %s", name)
 
         if name == "next_attention":
-            slot = self.store.next_attention_slot(after=self._last_attention_slot)
-            if slot is None:
+            session = self.store.next_attention(after=self._last_attention_id)
+            if session is None:
                 log.info("nothing needs attention")
                 return
-            self._last_attention_slot = slot
-            self._switch_to(slot)
+            self._last_attention_id = session.session_id
+            # Never use positional Ctrl+n: it counts expanded children, not
+            # keys, and this target can be in any section or below any pin.
+            threading.Thread(
+                target=self._focus_parent_session, args=(None, session),
+                name="macropad-nav", daemon=True,
+            ).start()
             return
 
         if name == "section_up":
@@ -353,12 +433,27 @@ class Daemon:
 
         log.warning("unknown action %r", name)
 
+    @_synchronized
     def _change_section(self, delta: int) -> None:
         """Move rows 1-2 to the previous/next section. A no-op at either end.
 
         Sections do not wrap: stepping past the last one, or before the
         first, leaves the current section exactly where it was.
         """
+        if self._children_root_id is not None:
+            if delta < 0:
+                self._children_root_id = None
+                self._children_page = 0
+            else:
+                root = self._children_root()
+                count = len(self._visible_children(root)) if root else 0
+                if (self._children_page + 1) * (self.cfg.slot_count - 1) >= count:
+                    return
+                self._children_page += 1
+            self._apply_view()
+            self._push_states()
+            self._push_section_leds()
+            return
         if not self._sections:
             return
         new_index = self._section_index + delta
@@ -369,10 +464,11 @@ class Daemon:
         # can be seconds old, and re-applying it resurrected child questions
         # and unread flags that had since cleared -- a burst of orange and
         # green on every switch back to "Pinned" until the next reconcile.
-        try:
-            self._sections = self.db.sections(self.cfg.slot_count)
-        except Exception:
-            log.exception("database read failed on section change")
+        if self._feed_snapshot is None:
+            try:
+                self._read_structure()
+            except Exception:
+                log.exception("database read failed on section change")
         if not self._sections:
             self._section_index = 0
             return
@@ -384,7 +480,7 @@ class Daemon:
             self._section_index + 1,
             len(self._sections),
         )
-        self.store.apply_snapshot(section.sessions, offscreen=self._offscreen_sessions())
+        self._apply_view()
         self._push_states()
         self._push_section_leds()
         # The LEDs are the feedback for the tap, so they go first. Re-caching
@@ -397,6 +493,48 @@ class Daemon:
             name="macropad-warm",
             daemon=True,
         ).start()
+
+    def _children_root(self):
+        return next((
+            node for section in self._sections for root in section.sessions
+            for node in (root, *root.descendants())
+            if node.session_id == self._children_root_id
+        ), None)
+
+    def _visible_children(self, root):
+        return [child for child in root.descendants()
+                if self.store.child_page_state(child) not in ("idle", "empty")]
+
+    @_synchronized
+    def _open_children(self, slot) -> None:
+        if not isinstance(slot, int):
+            return
+        root = self.store.session_for_slot(slot)
+        if root is not None and root.focusable:
+            self._children_root_id = root.session_id
+            self._children_page = 0
+            self._apply_view()
+            self._push_states()
+            self._push_section_leds()
+        self.link.send({"t": "busy_done", "k": slot})
+
+    def _apply_view(self) -> None:
+        roots = [s for section in self._sections for s in section.sessions]
+        root = self._children_root() if self._children_root_id else None
+        if self._children_root_id and root is None:
+            self._children_root_id = None
+            self._children_page = 0
+        self.store.children_page = root is not None
+        if root is not None:
+            children = self._visible_children(root)
+            page_size = self.cfg.slot_count - 1
+            self._children_page = min(self._children_page, max(0, (len(children) - 1) // page_size))
+            start = self._children_page * page_size
+            sessions = [root, *children[start:start + page_size]]
+        else:
+            sessions = list(self._sections[self._section_index].sessions) if self._sections else []
+        # Attention order is independent of the current section/page.
+        self.store.select_view(sessions, roots)
 
     def _offscreen_sessions(self) -> list:
         """Every session in a section other than the one on screen."""
@@ -475,13 +613,25 @@ class Daemon:
         self._app_focused = focused
         self.link.send({"t": "focus", "v": focused})
 
+    @_synchronized
     def reconcile(self) -> None:
         # Cheap, and it must be timely: a stale answer here means either a
         # keystroke typed into the wrong window, or the app minimised by a
         # focus chord it did not need.
         self._push_focus()
         try:
-            self._sections = self.db.sections(self.cfg.slot_count)
+            if not self._structure_loaded or self._feed_snapshot is None:
+                self._read_structure()
+            else:
+                covered = {
+                    sid for sid, item in self.store.feed_items(self._feed_snapshot).items()
+                    if self.store._feed_state(item) is not None
+                }
+                nodes = [node for sec in self._sections for root in sec.sessions
+                         for node in (root, *root.descendants())]
+                if any(node.session_id not in covered for node in nodes):
+                    self._sections = self.db.refresh_status(self._sections)
+                    self._record_db_snapshot()
         except Exception:
             log.exception("database reconcile failed")
             return
@@ -491,11 +641,7 @@ class Daemon:
             self._section_index = max(0, min(self._section_index, len(self._sections) - 1))
         else:
             self._section_index = 0
-        sessions = self._sections[self._section_index].sessions if self._sections else ()
-        self.store.apply_snapshot(sessions, offscreen=self._offscreen_sessions())
-        actions.warm_session_controls(
-            (session.workspace_id, session.session_id) for session in sessions
-        )
+        self._apply_view()
         self._push_states()
         self._push_section_leds()
 
@@ -531,6 +677,8 @@ class Daemon:
         )
 
         try:
+            self.reconcile()
+            self.feed.start()
             while not self._quit.is_set():
                 try:
                     self.reconcile()
@@ -553,6 +701,7 @@ class Daemon:
             log.exception("daemon stopped on an unhandled error")
             return 4
         finally:
+            self.feed.stop()
             if self.dev_tunnel is not None:
                 self.dev_tunnel.stop()
             self.link.stop()
@@ -645,6 +794,8 @@ STATE_COLOURS = {
     "error": "red, solid",
     "idle": "dim white",
     "empty": "off",
+    "merge_ready": "cyan, solid",
+    "paused": "dim violet",
 }
 
 #: Palette entries for states newer than some flashed firmware.
@@ -655,6 +806,8 @@ STATE_COLOURS = {
 #: means a new state works without reflashing the pad.
 NEW_STATE_PALETTE = {
     "interrupted": [[255, 20, 20], "pulse"],
+    "merge_ready": [[0, 45, 45], "solid"],
+    "paused": [[30, 12, 45], "solid"],
 }
 
 

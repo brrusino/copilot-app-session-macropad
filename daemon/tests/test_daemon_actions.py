@@ -44,6 +44,25 @@ def daemon(monkeypatch, tmp_path):
 
     d = main_module.Daemon(cfg)
     d.link = link
+    d.selected = []
+    monkeypatch.setattr(main_module.actions, "app_is_foreground", lambda: True)
+    monkeypatch.setattr(
+        main_module.actions, "focus_pinned_session",
+        lambda workspace_id, session_id, collapsed_group=None:
+            d.selected.append(session_id) or True,
+    )
+    monkeypatch.setattr(d.db, "collapsed_group_for", lambda *_a: None)
+    monkeypatch.setattr(d, "_await_navigation", lambda *_a: None)
+
+    class ImmediateThread:
+        def __init__(self, target, args=(), **kwargs):
+            self.target, self.args = target, args
+
+        def start(self):
+            self.target(*self.args)
+
+    monkeypatch.setattr(main_module.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(main_module.actions, "warm_session_controls", lambda *_a: True)
     return d
 
 
@@ -87,7 +106,7 @@ def test_next_attention_goes_to_the_session_that_wants_you(daemon):
 
     daemon._run_action("next_attention")
 
-    assert daemon.link.sent == [{"t": "type", "v": "ctrl+2"}]
+    assert daemon.selected == ["s-1"]
 
 
 def test_session_key_clicks_the_exact_parent_workspace(daemon, monkeypatch):
@@ -137,7 +156,7 @@ def test_a_question_outranks_unread(daemon):
 
     daemon._run_action("next_attention")
 
-    assert daemon.link.sent == [{"t": "type", "v": "ctrl+2"}]
+    assert daemon.selected == ["s-1"]
 
 
 def test_repeated_presses_walk_the_list(daemon):
@@ -150,10 +169,7 @@ def test_repeated_presses_walk_the_list(daemon):
     daemon._run_action("next_attention")
     daemon._run_action("next_attention")
 
-    assert daemon.link.sent == [
-        {"t": "type", "v": "ctrl+1"},
-        {"t": "type", "v": "ctrl+2"},
-    ]
+    assert daemon.selected == ["s-0", "s-1"]
 
 
 def test_nothing_needing_attention_does_nothing(daemon):

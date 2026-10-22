@@ -15,14 +15,15 @@ Copilot app already exposes on your machine.
 +---------+---------+---------+---------+
 | session | session | session | session |   pinned sessions 5-8
 +---------+---------+---------+---------+
-|attention|  duck   |  mode   | compact |   act on state, and on the app
+|sect. up |sect.down|  mode   | compact |   sections and focused-session actions
 +---------+---------+---------+---------+
 |  clear  |    dictation      |  enter  |   composer keys + push-to-talk
 +---------+---------+---------+---------+
 ```
 
-Every key except the two dictation keys **raises the Copilot app first**, so a
-press lands where you meant it even when you're in another window.
+Every tap except dictation **raises the Copilot app first**, so it lands where
+you meant it even when you're in another window. Session holds only change the
+pad's page; holding section up changes brightness.
 
 ### LED states
 
@@ -34,13 +35,15 @@ press lands where you meant it even when you're in another window.
 | amber, pulsing | waiting on you to answer something |
 | red, blinking | interrupted part-way, needs a nudge |
 | red, solid | the turn errored |
+| cyan, solid | this session is merge-ready |
+| dim violet | this session is paused |
 | white flash | your key press registered; pulses until the app has switched |
 | dim blue | the daemon isn't connected, so no state is known |
 | off | no session pinned in that slot |
 
 Two behaviours are worth knowing, because both look like bugs otherwise:
 
-- **A working session stays blue between turns.** `is_running` isn't
+- **The DB/hook fallback holds blue between turns.** `is_running` isn't
   continuous — it drops to false in the gap between turns and comes back,
   measured at up to 5.8s. Following it literally made the LED cycle
   blue → green → blue while work was plainly still going, so a working slot
@@ -49,9 +52,10 @@ Two behaviours are worth knowing, because both look like bugs otherwise:
 - **Unread is the app's own, never rolled up from children.** A parent whose
   subagent has unread output is not itself unread, and pretending otherwise
   produced a green light nothing could clear: one pin had 51 unread
-  descendants. Work and questions *do* roll up, because those clear
-  themselves — work stops on its own, and a question is answered from the
-  parent.
+  descendants. Questions, errors, interrupted sessions and work *do* roll up,
+  in that priority order. Errors and interruptions keep counting until the
+  child is archived or its state changes; there's no age-out. Merge-ready and
+  paused are self-only, including on the children page.
 
 ## How it works
 
@@ -62,29 +66,32 @@ keyboard. It receives *semantic* state from the host ("slot 3 is working")
 rather than pixel values, so animation runs locally, serial stays quiet, and
 the lights keep breathing even if the host stalls.
 
-**A host daemon** works out what each slot should show. It merges three
-sources, because none is sufficient alone:
+**A host daemon** works out what each workstream should show:
 
-- **Copilot CLI hooks** push events the instant they happen — a turn started, a
-  tool ran, the turn errored. Fast and precise, but hooks can't see *you*:
-  reading a session clears its unread badge inside the app and no hook fires.
-- **The app's database** is authoritative for unread state and pin order, but we
-  only observe it on a poll, so it lags a fast agent.
-- **The app's activity feed** is the only place a real question is recorded.
-  `permissionRequest` fires before *every* tool call and its payload has no
-  field distinguishing a genuine question from an auto-approval, so amber comes
-  from `agent_asking` / `agent_plan_ready` in the feed instead.
+- **The companion navigation feed owns status.** Each snapshot immediately
+  re-resolves the LEDs, including off-screen workstreams. Discovery and reconnect
+  are automatic; the daemon subscribes read-only and sends no app commands over
+  this connection.
+- **The database owns structure:** pins, groups, parent links, archival and
+  watched-child metadata. Structure is refreshed at startup, for unseen feed item IDs, and
+  when the feed's layout changes — not on every status revision. A coordinating
+  creator takes precedence over the original creator. Descendants stay attached
+  to their own session IDs rather than being folded into the parent's DB flags.
+- **DB status and CLI hooks remain the fallback** whenever the feed disconnects
+  or omits an item. The feed truncates collections, so missing isn't idle.
+  In the fallback, DB running flags, token movement and hooks track work;
+  `agent_asking` / `agent_plan_ready` in the DB activity table track questions.
+  Later token movement or a work hook retires a stale question. A
+  `permissionRequest` on an auto-approving session isn't a question.
+  New feed questions refresh their DB timestamps for oldest-first navigation.
 
-Where they disagree, the rules are specific rather than "newest wins":
-
-- The database is authoritative for **still running**. Hooks may only make the
-  pad react *faster* to work starting, never contradict the app into idle —
-  `agentStop` fires at the end of every turn, so letting it win made the LED
-  flap once per turn during a long task.
-- A question is retired by **hook evidence**, not by the feed. The app writes no
-  activity item until the whole turn ends, so answering a question leaves
-  `agent_asking` newest for minutes; a tool call after the question proves the
-  agent is executing again.
+Live verification on 2026-10-22 matched all 97 workspace and 23 chat feed items
+to `sessions.id` and `ghapp://sessions/<id>`. Workspace item IDs aren't workspace
+IDs (80 differed). The observed `attention` item had `indicatorKind=needs_input`
+and matched the latest `agent_asking` record; stale DB asking records also
+appeared as feed `idle`. Amber accepts that verified attention indicator or
+`needs_input`, not an arbitrary future `attention` variant. No live
+`agent_plan_ready` item was observed in that sample.
 
 **A hook config** at `~/.copilot/hooks/macropad.json` wires the two together.
 
@@ -285,9 +292,11 @@ This is the part worth understanding, because it's the opposite of how the
 project started.
 
 **The pad types fixed chords; the daemon selects sessions by identity.**
-Pressing a session key sends its slot over the serial or network bridge. The
-daemon resolves that slot to the same top-level parent used for its LED, then
-clicks the sidebar row whose automation ID contains that workspace UUID.
+Tapping a session key sends its slot on release over the serial or network
+bridge. The daemon jumps to its most urgent blocking descendant: oldest
+question first, then error, then interrupted. With no blocked descendant it
+focuses the coordinator. Selection uses the target's exact workspace or chat
+identity, never positional `Ctrl+<n>`.
 
 The split isn't stylistic. The daemon cannot type with Win32
 `SendInput`, and that reaches nothing unless the daemon happens to be running
@@ -571,8 +580,9 @@ The pad degrades to a known state rather than failing:
 - **Lost:** LED session state, and pressing a key to focus a session.
 
 Still worth doing on the daemon side: install the hooks and run
-`python -m macropad_daemon --status`, which prints the same information the LEDs
-would show. It also means everything is in place the moment a transport appears.
+`python -m macropad_daemon --status`, which prints a one-shot DB fallback view
+without starting a feed subscription or touching the pad. It also means
+everything is in place the moment a transport appears.
 
 See [When the pad's machine can run nothing at all](#when-the-pads-machine-can-run-nothing-at-all)
 for why some setups have no transport available, and what to do about it.
@@ -581,9 +591,9 @@ for why some setups have no transport available, and what to do about it.
 
 | key | keys sent |
 |---|---|
-| section up | *(nothing typed — daemon moves rows 1-2 to the previous section)* |
+| section up | *(previous section; from a children page, return to the section)* |
 | section up, held | *(nothing typed — steps the LED brightness)* |
-| section down | *(nothing typed — daemon moves rows 1-2 to the next section)* |
+| section down | *(next section, or next children page)* |
 | cycle mode | `Shift+Tab` |
 | compact | `/compact` + `Enter` |
 | clear | `Ctrl+A`, `Delete` |
@@ -604,9 +614,16 @@ either end, the boundary key is just a no-op.
 uses the plain resting colour, and every group after it gets its own solid
 colour (`section_colors` in `macropad.toml`), cycling if you have more groups
 than configured colours. **Section down's LED rolls up attention from every
-*other* section** — asking beats working beats unread, same priority as a
-session key — so you know something needs you elsewhere before you go
+*other* section** — asking, error, interrupted, working, then the coordinator's
+own unread, using the same rollup as a session key — so you know something needs you elsewhere before you go
 looking for it.
+
+The configurable **`next_attention`** action walks the whole tree across
+sections, landing on the actual session: questions (oldest first), errors,
+interruptions, then unread. The unread step includes coordinators and
+unwatched children, never watched-child output. It doesn't use `Ctrl+<n>`.
+The default layout keeps the two section-navigation keys instead; bind this
+action in `ACTION_KEYS` if you want it on the pad.
 
 **Hold section up to change brightness.** The pad sits on a desk, and a desk
 is a different room at 9am than it is at 11pm — the level that reads well at
@@ -622,12 +639,9 @@ strongest channel is already at 255 — so the gain lifts their weaker channels
 and they brighten by washing toward white. That's the only headroom a
 near-maximum colour has, and in daylight being readable beats being purple.
 
-It shares a key because all sixteen already had a job, and this is the only one
-that could share. Every other key acts the moment it goes down, by typing a
-chord itself; this one's effect is decided by the host from an event the pad
-chooses whether to send, so a hold can be kept from firing it. The cost is that
-a tap dispatches on release instead of press, which adds the length of your own
-tap.
+Its tap dispatches on release so a brightness hold doesn't also switch sections.
+Session keys use the same 0.6s hold threshold for children pages; their taps
+also dispatch on release.
 
 A level chosen on the pad is kept until it reboots, and outlives a reconnect:
 the daemon pushes its configured brightness on every connect, and the pad
@@ -664,14 +678,25 @@ Two details that matter:
 
 ## Which session is on which key
 
-Keys 1-8 follow the app's pinned order. The daemon skips archived pins and
-child sessions, so each slot resolves to a top-level parent workspace and both
-the click and LED use that same object. Re-ordering pins re-orders the keys;
-expanding or opening children does not. A child's *work* still lights up its
-parent — a child spawned by another session (found either through the app's
-own parent-link table, or purely by matching `creator_session_id` /
-`coordinating_creator_session_id` against another session) rolls its work and
-asking state up to that parent, the same as any other child.
+**A key is a workstream:** a coordinator plus its live subtree. Keys 1-8 follow
+the app's pinned order, skipping archived pins and children. Re-ordering pins
+re-orders the keys; expanding children doesn't. Questions, errors, interruptions
+and running descendants light up the coordinator. Child unread never does.
+Tapping jumps to a blocked descendant, or to the coordinator if none is blocked.
+
+**Hold a session key for its children page** (firmware v7). Slot 1 is the
+coordinator; slots 2-8 show non-idle descendants, flattened depth-first in
+sidebar order. Section down advances through them without wrapping, keeping
+the coordinator in slot 1. Section up returns to your section. These LEDs show
+each session's own state. Taps use the same blocked-descendant rule.
+
+A child is **watched** if it reports to a live coordinator in the same tree:
+`notify_creator_on_idle` is set, or `notification_recipient_session_id` /
+`coordinating_creator_session_id` names that coordinator. Watched unread counts
+as idle on this page. Unwatched unread remains reachable here and through
+attention-next, but never rolls up to a workstream LED. Mode, compact and Enter
+always act on the focused session, including a child — never on its parent on
+the child's behalf.
 
 ### Sections and groups
 
@@ -754,7 +779,7 @@ where the Copilot app sits on your taskbar, or every key will raise the *wrong*
 app and then type into it. Count left to right, ignoring Start / Search and
 Task View. Set it to `None` to turn focus-stealing off entirely.
 
-**LED timing you may notice, both deliberate.** A working session holds blue for
+**Fallback LED timing, both deliberate.** Without a feed item, a working session holds blue for
 a few seconds after it stops, because `is_running` drops out between turns (up
 to 5.8s measured) and following it literally made the light cycle while work was
 still going. And a question clears as soon as the agent runs its next tool, not
@@ -764,8 +789,10 @@ you'd answered.
 
 ## Troubleshooting
 
-**LEDs never change.** Check the daemon log for `hook <event> session=...` lines
-with `--verbose`. No lines means hooks aren't reaching it: confirm
+**LEDs never change.** Check the companion navigation integration is available
+under `~/.copilot/run/`. The daemon reconnects automatically and falls back to
+DB/hooks without it. For that fallback, check the daemon log for
+`hook <event> session=...` lines with `--verbose`. No lines means hooks aren't reaching it: confirm
 `~/.copilot/hooks/macropad.json` exists, and remember hooks are only picked up
 by sessions started *after* installation.
 
@@ -823,8 +850,9 @@ cd daemon
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-The suite covers slot resolution and the hook/database conflict rule, the
-read-only database reader against a fixture database, hook generation
+The suite covers feed-first status and DB/hook fallback, nested rollup and
+watched-child rules, tap targets, attention-next and children-page paging.
+It also covers the read-only DB reader against a fixture database, hook generation
 (including the safety properties above), pad discovery ordering, and the hook
 receiver over real HTTP.
 
@@ -861,6 +889,12 @@ on the physical pad:
 
 Still unverified:
 
+- **Nested-session gestures on the physical pad (firmware v7).** Feed/DB
+  identity and attention semantics were checked live, and the wired daemon
+  received a live snapshot through a disconnected sink (77 sessions covered,
+  15 using fallback). Rollup, tap targeting, release/hold dispatch and paging
+  are tested without hardware. Reflash `keybow/` to use session holds; no live
+  daemon or pad bridge was restarted for this change.
 - **Rows 3 and 4 as a whole**, and raising the app with `Win+7`. Implemented
   and unit-tested, and every shortcut they use is confirmed — but not yet
   exercised on hardware, because they need the firmware reflashing first.

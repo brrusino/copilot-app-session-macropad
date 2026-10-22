@@ -7,6 +7,7 @@ import sqlite3
 import pytest
 
 from macropad_daemon.copilot_db import GROUPS_KEY, PINS_KEY, UNREAD_KEY, CopilotDB
+from macropad_daemon.state import StateStore
 
 SCHEMA = """
 CREATE TABLE app_state (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT);
@@ -28,7 +29,9 @@ CREATE TABLE workspaces (
     archived_at TEXT,
     updated_at TEXT,
     creator_session_id TEXT,
-    coordinating_creator_session_id TEXT
+    coordinating_creator_session_id TEXT,
+    notify_creator_on_idle INTEGER,
+    notification_recipient_session_id TEXT
 );
 CREATE TABLE workspace_parent_links (
     child_workspace_id TEXT,
@@ -356,7 +359,8 @@ def test_running_child_makes_the_parent_working(tmp_path):
     rows = db.pinned_sessions(8)
     assert len(rows) == 1
     assert rows[0].name == "Parent"
-    assert rows[0].is_running is True
+    assert rows[0].is_running is False
+    assert StateStore().resolve(rows[0]) == "working"
 
 
 def test_idle_children_leave_the_parent_idle(tmp_path):
@@ -385,7 +389,7 @@ def test_the_parents_own_unread_still_counts(tmp_path):
 def test_rollup_reaches_grandchildren(tmp_path):
     """Work delegated two levels down still counts."""
     db = build_family(tmp_path, child_running=1, depth=2)
-    assert db.pinned_sessions(8)[0].is_running is True
+    assert StateStore().resolve(db.pinned_sessions(8)[0]) == "working"
 
 
 def test_archived_child_does_not_count(tmp_path):
@@ -523,7 +527,7 @@ def test_latest_activity_marks_a_session_as_asking(tmp_path):
         activity=[("s-1", "agent_idle", "2026-01-01T00:00:00Z"),
                   ("s-1", "agent_asking", "2026-01-01T01:00:00Z")],
     )
-    assert db.pinned_sessions(4)[0].asking is True
+    assert StateStore().resolve(db.pinned_sessions(4)[0]) == "needs_approval"
 
 
 def test_an_answered_question_stops_asking(tmp_path):
@@ -555,7 +559,9 @@ def test_a_child_asking_surfaces_on_the_parent(tmp_path):
         children=["kid-ws"],
         activity=[("s-k", "agent_asking", "2026-01-01T01:00:00Z")],
     )
-    assert db.pinned_sessions(4)[0].asking is True
+    root = db.pinned_sessions(4)[0]
+    assert root.asking is False
+    assert StateStore().resolve(root) == "needs_approval"
 
 
 def test_plan_ready_counts_as_asking(tmp_path):
@@ -754,7 +760,7 @@ def test_creator_session_child_work_rolls_up_to_the_parent(tmp_path):
             ("s-kid", "kid", 1, 0, None),
         ],
     )
-    assert db.pinned_sessions(8)[0].is_running is True
+    assert StateStore().resolve(db.pinned_sessions(8)[0]) == "working"
 
 
 def test_creator_session_id_naming_a_pinned_chat_session_is_a_child(tmp_path):
@@ -782,7 +788,7 @@ def test_creator_session_child_rollup_reaches_a_pinned_chat_parent(tmp_path):
             ("s-kid", "kid", 1, 0, None),
         ],
     )
-    assert db.pinned_sessions(8)[0].is_running is True
+    assert StateStore().resolve(db.pinned_sessions(8)[0]) == "working"
 
 
 def test_missing_creator_session_columns_are_tolerated(tmp_path):
