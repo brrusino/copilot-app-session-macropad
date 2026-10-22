@@ -721,8 +721,8 @@ clicks the exact member row — it never re-collapses the group behind you.
 
 ## Dictation
 
-The two bottom-left keys drive one **Ctrl+Win** push-to-talk chord for Wispr
-Flow. It's handled entirely in firmware as a real USB HID chord, so there's no
+The two bottom-left keys drive one **Left Option+Space** push-to-talk chord for
+Handy on macOS. It's handled entirely in firmware as a real USB HID chord, so there's no
 host round trip, it needs no software on the machine it types into, and it keeps
 working when the daemon isn't running at all.
 
@@ -765,7 +765,8 @@ screen /dev/tty.usbmodem*                  # ctrl-a k to quit
 Put the result into `ROWS` and reflash without the calibrate flag. That table is
 the only place a physical key number appears.
 
-**The dictation chord** defaults to Ctrl+Win for Wispr Flow. If your dictation
+**The dictation chord** defaults to Left Option+Space for Handy (use
+`("LEFT_CONTROL", "LEFT_GUI")` for Wispr Flow on Windows). If your dictation
 tool uses something else, change `DICTATION_CHORD` in `keybow/config.py` — it
 takes Adafruit HID keycode names, so no code change is needed.
 

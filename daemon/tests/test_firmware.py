@@ -294,7 +294,7 @@ def test_chord_engages_on_first_key_down(firmware):
     first, _ = fw_config.DICTATION_KEYS
     firmware._on_down(first, 0.0)
     assert firmware._chord_active is True
-    assert firmware._test_keyboard.held == {"LEFT_CONTROL", "LEFT_GUI"}
+    assert firmware._test_keyboard.held == {"LEFT_ALT", 0x2C}
 
 
 def test_chord_releases_when_the_only_key_comes_up(firmware):
@@ -360,8 +360,8 @@ def test_chord_comes_from_config(firmware):
     """The chord is data, not hardcoded, so it can follow the dictation tool."""
     import config as fw_config
 
-    assert fw_config.DICTATION_CHORD == ("LEFT_CONTROL", "LEFT_GUI")
-    assert firmware._CHORD == ("LEFT_CONTROL", "LEFT_GUI")
+    assert fw_config.DICTATION_CHORD == ("LEFT_ALT", "SPACE")
+    assert firmware._CHORD == ("LEFT_ALT", 0x2C)   # Option+Space
 
 
 def test_chord_resolution_drops_unknown_keycodes(firmware):

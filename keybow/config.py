@@ -56,11 +56,11 @@ DICTATION_KEYS = (ROWS[3][1], ROWS[3][2])
 # The modifier chord the dictation keys hold down, as adafruit_hid Keycode
 # NAMES (resolved at runtime so this file stays plain data).
 #
-# Default is Wispr Flow's push-to-talk on Windows: Ctrl+Win held down.
-# On macOS the same physical chord reports as Ctrl+Cmd, so LEFT_GUI is still
-# correct there -- but if your dictation tool uses a different shortcut, change
-# it here rather than in code.py.
-DICTATION_CHORD = ("LEFT_CONTROL", "LEFT_GUI")
+# Default is Handy's push-to-talk on macOS: Left Option+Space held down
+# (LEFT_ALT is Option on a Mac). For Wispr Flow on Windows use
+# ("LEFT_CONTROL", "LEFT_GUI"). If your dictation tool uses a different
+# shortcut, change it here rather than in code.py.
+DICTATION_CHORD = ("LEFT_ALT", "SPACE")
 
 # Bring the Copilot app to the front before acting on it.
 #
