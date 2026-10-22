@@ -13,6 +13,7 @@ the system that can actually type.
 from __future__ import annotations
 
 import pytest
+from dataclasses import replace
 
 from macropad_daemon import config as config_module
 from macropad_daemon import main as main_module
@@ -46,9 +47,11 @@ def daemon(monkeypatch, tmp_path):
     d.link = link
     d.selected = []
     monkeypatch.setattr(main_module.actions, "app_is_foreground", lambda: True)
+    # Sessions link by workspace id ("ws-N" in the nesting fixtures); record
+    # the session it names so tests assert which session was chosen.
     monkeypatch.setattr(
         main_module.actions, "focus_session",
-        lambda session_id: d.selected.append(session_id) or True,
+        lambda link_id: d.selected.append(link_id.replace("ws-", "s-", 1)) or True,
     )
     monkeypatch.setattr(d.db, "collapsed_group_for", lambda *_a: None)
     monkeypatch.setattr(d, "_await_navigation", lambda *_a: None)
@@ -109,7 +112,9 @@ def test_next_attention_goes_to_the_session_that_wants_you(daemon):
 
 
 def test_session_key_opens_the_exact_session_deep_link(daemon, monkeypatch):
-    target = session(2)
+    # Workspace id, not session id: with a parent coordinator open the app
+    # ignores a child's session-id link.
+    target = replace(session(2), workspace_id="w-2")
     deep_links = []
     pinned = []
     daemon.store.apply_snapshot([session(0), session(1), target])
@@ -127,7 +132,7 @@ def test_session_key_opens_the_exact_session_deep_link(daemon, monkeypatch):
 
     daemon._focus_parent_session(2, target)
 
-    assert deep_links == ["s-2"]
+    assert deep_links == ["w-2"]
     assert pinned == []
 
 

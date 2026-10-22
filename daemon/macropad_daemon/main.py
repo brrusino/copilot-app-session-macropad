@@ -163,7 +163,9 @@ class Daemon:
     @_synchronized
     def _on_hook(self, event_type: str, session_id: str, payload: dict) -> None:
         log.debug("hook %s session=%s", event_type, session_id[:8] if session_id else "?")
-        self.store.apply_hook(event_type, session_id)
+        self.store.apply_hook(
+            event_type, session_id, recoverable=payload.get("recoverable") is True
+        )
         # Hooks are the low-latency path; push straight away rather than
         # waiting for the next reconcile tick.
         if self._sections:
@@ -347,8 +349,10 @@ class Daemon:
         # The ghapp:// deep link is exact and dispatches in ~0.1s. The sidebar
         # InvokePattern path needs a UI Automation tree walk that measured ~3s
         # on a busy sidebar, so it is only the fallback when the link can't
-        # be launched.
-        if not actions.focus_session(session.session_id or ""):
+        # be launched. Link by workspace id when there is one: with a parent
+        # coordinator open, the app ignores a child's session-id link but
+        # honors its workspace-id link.
+        if not actions.focus_session(session.workspace_id or session.session_id or ""):
             collapsed_group = (
                 self.db.collapsed_group_for(session.workspace_id)
                 if session.workspace_id

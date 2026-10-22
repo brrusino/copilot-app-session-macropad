@@ -106,6 +106,15 @@ def test_error_event_shows_error():
     assert store.slot_states()[0] == ERROR
 
 
+def test_recoverable_error_does_not_latch_red_on_a_working_session():
+    """A retried transport blip (ECONNRESET, truncated model response) arrives
+    as errorOccurred with recoverable=true while the turn carries on."""
+    store = store_with(session())
+    store.apply_hook("userPromptSubmitted", "sess-a", now=100.0)
+    store.apply_hook("errorOccurred", "sess-a", now=101.0, recoverable=True)
+    assert store.slot_states()[0] == WORKING
+
+
 def test_approval_outranks_error():
     """An approval prompt blocks progress; it must win over a past failure."""
     store = store_with(session())

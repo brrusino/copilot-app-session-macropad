@@ -158,9 +158,18 @@ class StateStore:
             self._overlays[session_id] = overlay
         return overlay
 
-    def apply_hook(self, event_type: str, session_id: str, now: float | None = None) -> None:
+    def apply_hook(
+        self, event_type: str, session_id: str, now: float | None = None,
+        recoverable: bool = False,
+    ) -> None:
         """Fold one hook event into the overlay for its session."""
         if not session_id:
+            return
+        # errorOccurred also fires for transport blips the agent retries
+        # (connection resets, truncated model responses), flagged
+        # ``recoverable``. No later hook clears them while the turn carries on,
+        # so latching them would show red on a session that is still working.
+        if event_type == EVENT_ERROR and recoverable:
             return
         now = time.monotonic() if now is None else now
         overlay = self.overlay_for(session_id)
