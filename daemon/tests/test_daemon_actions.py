@@ -47,9 +47,8 @@ def daemon(monkeypatch, tmp_path):
     d.selected = []
     monkeypatch.setattr(main_module.actions, "app_is_foreground", lambda: True)
     monkeypatch.setattr(
-        main_module.actions, "focus_pinned_session",
-        lambda workspace_id, session_id, collapsed_group=None:
-            d.selected.append(session_id) or True,
+        main_module.actions, "focus_session",
+        lambda session_id: d.selected.append(session_id) or True,
     )
     monkeypatch.setattr(d.db, "collapsed_group_for", lambda *_a: None)
     monkeypatch.setattr(d, "_await_navigation", lambda *_a: None)
@@ -109,11 +108,33 @@ def test_next_attention_goes_to_the_session_that_wants_you(daemon):
     assert daemon.selected == ["s-1"]
 
 
-def test_session_key_clicks_the_exact_parent_workspace(daemon, monkeypatch):
+def test_session_key_opens_the_exact_session_deep_link(daemon, monkeypatch):
     target = session(2)
-    selected = []
+    deep_links = []
+    pinned = []
     daemon.store.apply_snapshot([session(0), session(1), target])
-    monkeypatch.setattr(main_module.actions, "app_is_foreground", lambda: True)
+    monkeypatch.setattr(
+        main_module.actions,
+        "focus_session",
+        lambda session_id: deep_links.append(session_id) or True,
+    )
+    monkeypatch.setattr(
+        main_module.actions,
+        "focus_pinned_session",
+        lambda *args, **kwargs: pinned.append(args) or True,
+    )
+    monkeypatch.setattr(daemon, "_await_navigation", lambda slot, item: None)
+
+    daemon._focus_parent_session(2, target)
+
+    assert deep_links == ["s-2"]
+    assert pinned == []
+
+
+def test_failed_deep_link_falls_back_to_the_exact_sidebar_row(daemon, monkeypatch):
+    target = session(1)
+    selected = []
+    monkeypatch.setattr(main_module.actions, "focus_session", lambda session_id: False)
     monkeypatch.setattr(
         main_module.actions,
         "focus_pinned_session",
@@ -124,28 +145,9 @@ def test_session_key_clicks_the_exact_parent_workspace(daemon, monkeypatch):
     )
     monkeypatch.setattr(daemon, "_await_navigation", lambda slot, item: None)
 
-    daemon._focus_parent_session(2, target)
-
-    assert selected == [("ws-2", "s-2")]
-
-
-def test_exact_parent_click_falls_back_to_the_session_deep_link(daemon, monkeypatch):
-    target = session(1)
-    deep_links = []
-    monkeypatch.setattr(main_module.actions, "app_is_foreground", lambda: True)
-    monkeypatch.setattr(
-        main_module.actions, "focus_pinned_session", lambda *_args, **_kwargs: False
-    )
-    monkeypatch.setattr(
-        main_module.actions,
-        "focus_session",
-        lambda session_id: deep_links.append(session_id) or True,
-    )
-    monkeypatch.setattr(daemon, "_await_navigation", lambda slot, item: None)
-
     daemon._focus_parent_session(1, target)
 
-    assert deep_links == ["s-1"]
+    assert selected == [("ws-1", "s-1")]
 
 
 def test_a_question_outranks_unread(daemon):

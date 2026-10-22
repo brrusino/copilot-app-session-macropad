@@ -312,15 +312,16 @@ belongs to the machine in front of you, not the one the daemon runs on. The pad
 is a real USB keyboard, so its keystrokes are forwarded like any other. The
 dictation chord worked from day one for exactly this reason.
 
-Session selection is different: the app exposes each visible row through
-Windows UI Automation as `workspace-preview-trigger-<workspace-id>`. One tree
-walk caches every row, then invokes its session-name button semantically. A
-live cached invocation returned in 94ms and the target parent was active in
-672ms, independent of how many child rows are expanded above it.
+Session selection uses the `ghapp://sessions/<id>` deep link. It is exact for
+any session, including nested children, and needs no sidebar lookup. Measured
+live: the shell handoff returned in 75-140ms and the app reported the target
+focused in 0.7-0.95s. An earlier app build took roughly 4.5 seconds here, which
+is why this used to be the fallback.
 
-The `ghapp://sessions/<id>` deep link remains the exact fallback when the
-accessibility row cannot be found. It works, but hands a URL to the shell,
-which spawns `github.exe` to route it — measured at roughly 4.5 seconds.
+The sidebar's UI Automation rows (`workspace-preview-trigger-<workspace-id>`)
+remain the fallback when the deep link can't be launched. Invoking a cached row
+is fast, but finding it needs a tree walk that measured about 3 seconds on a
+busy sidebar, and every cache miss pays it again.
 
 ### Shortcuts this relies on
 

@@ -344,21 +344,19 @@ class Daemon:
         ).start()
 
     def _focus_parent_session(self, slot: int | None, session) -> None:
-        # InvokePattern is semantic rather than coordinate-backed, so exact
-        # session selection can happen while the pad's Win+<n> focus chord is
-        # still bringing the app forward.
-        collapsed_group = (
-            self.db.collapsed_group_for(session.workspace_id)
-            if session.workspace_id
-            else None
-        )
-        selected = actions.focus_pinned_session(
-            session.workspace_id, session.session_id, collapsed_group=collapsed_group
-        )
-        if not selected:
-            # Exact and safe, but slower because the URI handler routes through
-            # github.exe. This is the failure path, not a positional shortcut.
-            actions.focus_session(session.session_id or "")
+        # The ghapp:// deep link is exact and dispatches in ~0.1s. The sidebar
+        # InvokePattern path needs a UI Automation tree walk that measured ~3s
+        # on a busy sidebar, so it is only the fallback when the link can't
+        # be launched.
+        if not actions.focus_session(session.session_id or ""):
+            collapsed_group = (
+                self.db.collapsed_group_for(session.workspace_id)
+                if session.workspace_id
+                else None
+            )
+            actions.focus_pinned_session(
+                session.workspace_id, session.session_id, collapsed_group=collapsed_group
+            )
         self._await_navigation(slot, session)
 
     def _await_navigation(self, slot: int | None, session) -> None:
@@ -483,16 +481,6 @@ class Daemon:
         self._apply_view()
         self._push_states()
         self._push_section_leds()
-        # The LEDs are the feedback for the tap, so they go first. Re-caching
-        # the sidebar rows for the new section is a full tree walk (seconds),
-        # so it runs off-thread like the navigation path does.
-        targets = [(s.workspace_id, s.session_id) for s in section.sessions]
-        threading.Thread(
-            target=actions.warm_session_controls,
-            args=(targets,),
-            name="macropad-warm",
-            daemon=True,
-        ).start()
 
     def _children_root(self):
         return next((
