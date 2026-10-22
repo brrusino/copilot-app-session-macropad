@@ -629,7 +629,11 @@ class Daemon:
                 }
                 nodes = [node for sec in self._sections for root in sec.sessions
                          for node in (root, *root.descendants())]
-                if any(node.session_id not in covered for node in nodes):
+                # Feed questions can stick after an answer. Refresh status to
+                # observe work retiring them, then keep their fallback current.
+                questions = self.store._feed_question_at
+                if any(node.session_id not in covered or node.session_id in questions
+                       for node in nodes):
                     self._sections = self.db.refresh_status(self._sections)
                     self._record_db_snapshot()
         except Exception:

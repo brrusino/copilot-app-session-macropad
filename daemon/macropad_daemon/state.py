@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: MIT
 """Feed-first session status and workstream rollup.
 
-The DB supplies structure. A connected companion item owns its own status;
-missing items and disconnections use the original DB/hook resolver. Descendants
+The DB supplies structure. A connected companion item owns its own status
+unless later work retires its question; missing items and disconnections also
+use the original DB/hook resolver. Descendants
 keep their identities throughout resolution, so an answered child question
 cannot get latched onto its parent.
 """
@@ -116,6 +117,8 @@ class StateStore:
     _last_activity: dict[str, int] = field(default_factory=dict)
     _feed_items: dict[str, NavigationItem] = field(default_factory=dict)
     _feed_question_at: dict[str, float] = field(default_factory=dict)
+    _feed_question_activity: dict[str, int] = field(default_factory=dict)
+    _retired_feed_questions: set[str] = field(default_factory=set)
     _roots: list[PinnedSession] = field(default_factory=list)
     children_page: bool = False
 
@@ -142,6 +145,11 @@ class StateStore:
         self._feed_question_at = {
             sid: self._feed_question_at.get(sid, when) for sid in questions
         }
+        self._feed_question_activity = {
+            sid: self._feed_question_activity.get(sid, self._last_activity[sid])
+            for sid in questions if sid in self._last_activity
+        }
+        self._retired_feed_questions.intersection_update(questions)
         self._feed_items = items
 
     def overlay_for(self, session_id: str) -> SessionOverlay:
@@ -333,13 +341,14 @@ class StateStore:
         if session is None or session.session_id is None:
             return EMPTY
 
+        overlay = self._overlays.get(session.session_id)
         item = self._feed_items.get(session.session_id)
         if item is not None:
             state = self._feed_state(item)
-            if state is not None:
+            if state is not None and (
+                state != NEEDS_APPROVAL or not self._feed_question_stale(session, overlay)
+            ):
                 return state
-
-        overlay = self._overlays.get(session.session_id)
 
         # Approval and error have no database equivalent, so hooks own them
         # outright. Approval outranks error: it is the one state that blocks
@@ -374,6 +383,26 @@ class StateStore:
             return UNREAD
 
         return IDLE
+
+    def _feed_question_stale(
+        self, session: PinnedSession, overlay: SessionOverlay | None,
+    ) -> bool:
+        sid = session.session_id
+        if sid in self._retired_feed_questions:
+            return True
+        when = self._feed_question_at.get(sid, 0.0)
+        baseline = self._feed_question_activity.get(sid)
+        if (
+            (overlay is not None and overlay.worked_wall > when)
+            or (baseline is not None and session.activity != baseline)
+            or (session.asking and session.asking_at <= when
+                and not self._is_asking(session, overlay))
+        ):
+            # Keep the retirement for this feed question even if a later DB
+            # snapshot clears its asking/activity bookkeeping.
+            self._retired_feed_questions.add(sid)
+            return True
+        return False
 
     def _is_asking(self, session: PinnedSession, overlay: SessionOverlay | None) -> bool:
         """Whether a slot is still waiting on you to answer something.

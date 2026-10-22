@@ -89,6 +89,62 @@ def test_unverified_attention_is_not_assumed_to_be_a_question():
     assert store.resolve(root) == "idle"
 
 
+@pytest.mark.parametrize("evidence", ["hook", "activity", "db_retirement"])
+def test_stale_feed_question_uses_fallback_everywhere(evidence, monkeypatch):
+    child = node(1, asking=True, asking_at=1, activity=10)
+    root = node(0, children=(child,))
+    store = StateStore()
+    store.apply_snapshot([root])
+    if evidence == "db_retirement":
+        child = replace(child, activity=11)
+        root = replace(root, children=(child,))
+        store.apply_snapshot([root])
+    store.apply_feed(snapshot(("s-0", "idle"), ("s-1", "attention", "needs_input")))
+    if evidence == "hook":
+        monkeypatch.setattr("macropad_daemon.state.time.time",
+                            lambda: store._feed_question_at["s-1"] + 1)
+        store.apply_hook("postToolUse", "s-1")
+    elif evidence == "activity":
+        child = replace(child, activity=12)
+        root = replace(root, children=(child,))
+        store.apply_snapshot([root])
+    assert store.resolve_self(child) == "working"
+    assert store.resolve(root) == "working"
+    assert store.tap_target(root) == root
+    assert store.attention_sessions() == []
+    assert store.next_attention() is None
+    assert store.rolled_up([root]) == "working"
+    # Clearing the DB question must not resurrect the stuck feed question.
+    child = replace(child, asking=False, asking_at=0)
+    store.apply_snapshot([replace(root, children=(child,))])
+    assert store.resolve_self(child) == "working"
+
+
+@pytest.mark.parametrize("asking", [False, True])
+def test_fresh_feed_question_wins_before_db_catches_up(asking):
+    child = node(1, asking=asking, asking_at=1 if asking else 0,
+                 is_running=True, activity=10)
+    store = StateStore()
+    store.apply_snapshot([child])
+    store.apply_feed(snapshot(("s-1", "needs_input")))
+    # Running alone also accompanies real questions; it isn't an answer.
+    store.apply_snapshot([child])
+    assert store.resolve_self(child) == "needs_approval"
+
+
+def test_new_feed_question_does_not_inherit_previous_retirement():
+    child = node(1, activity=10)
+    store = StateStore()
+    store.apply_snapshot([child])
+    store.apply_feed(snapshot(("s-1", "needs_input")))
+    child = replace(child, activity=11)
+    store.apply_snapshot([child])
+    assert store.resolve_self(child) == "working"
+    store.apply_feed(snapshot(("s-1", "running"), revision=2))
+    store.apply_feed(snapshot(("s-1", "needs_input"), revision=3))
+    assert store.resolve_self(child) == "needs_approval"
+
+
 def test_child_question_is_retired_using_the_childs_work_not_the_parents():
     child = node(1, asking=True, asking_at=1)
     root = node(0, children=(child,))
@@ -266,6 +322,28 @@ def test_full_feed_coverage_needs_no_db_poll(daemon, monkeypatch):
     monkeypatch.setattr(daemon.db, "refresh_status", lambda *_a: pytest.fail("status poll"))
     daemon.reconcile()
     daemon.reconcile()
+
+
+def test_feed_question_polls_work_evidence_and_keeps_fallback_current(daemon, monkeypatch):
+    child = node(0, asking=True, asking_at=1, activity=10)
+    install_sections(daemon, monkeypatch, [Section("Pinned", (child,))])
+    daemon._on_feed_snapshot(snapshot(("s-0", "needs_input")))
+    assert daemon.store.slot_states()[0] == "needs_approval"
+    calls = []
+    refreshed = replace(child, activity=11, is_running=True)
+    monkeypatch.setattr(daemon.db, "refresh_status",
+                        lambda secs: calls.append(True) or [Section("Pinned", (refreshed,))])
+    monkeypatch.setattr(daemon.db, "sections", lambda *_a: pytest.fail("structure poll"))
+    daemon.reconcile()
+    assert calls == [True]
+    assert daemon.store.slot_states()[0] == "working"
+    refreshed = replace(refreshed, asking=False, asking_at=0,
+                        is_running=False, unread=True)
+    daemon.reconcile()
+    assert calls == [True, True]
+    assert not daemon.store.session_for_slot(0).is_running
+    assert not daemon.store.session_for_slot(0).asking
+    assert daemon.store.slot_states()[0] != "needs_approval"
 
 
 def test_hook_unread_hint_is_not_erased_by_switching_the_cached_view(daemon, monkeypatch):

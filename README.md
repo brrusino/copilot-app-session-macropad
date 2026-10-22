@@ -78,12 +78,16 @@ the lights keep breathing even if the host stalls.
   creator takes precedence over the original creator. Descendants stay attached
   to their own session IDs rather than being folded into the parent's DB flags.
 - **DB status and CLI hooks remain the fallback** whenever the feed disconnects
-  or omits an item. The feed truncates collections, so missing isn't idle.
+  or omits an item, or later work disproves a stuck feed question. The feed
+  truncates collections, so missing isn't idle.
   In the fallback, DB running flags, token movement and hooks track work;
   `agent_asking` / `agent_plan_ready` in the DB activity table track questions.
   Later token movement or a work hook retires a stale question. A
   `permissionRequest` on an auto-approving session isn't a question.
   New feed questions refresh their DB timestamps for oldest-first navigation.
+  While a feed question remains, reconciliation refreshes cached DB status
+  (not structure) to observe token movement and keep a retired question's
+  fallback current. Running alone doesn't retire a question, and no age-out is used.
 
 Live verification on 2026-10-22 matched all 97 workspace and 23 chat feed items
 to `sessions.id` and `ghapp://sessions/<id>`. Workspace item IDs aren't workspace
