@@ -68,7 +68,7 @@ the lights keep breathing even if the host stalls.
 
 **A host daemon** works out what each workstream should show:
 
-- **The companion navigation feed owns status.** Each snapshot immediately
+- **The companion navigation feed contributes status.** Each snapshot immediately
   re-resolves the LEDs, including off-screen workstreams. Discovery and reconnect
   are automatic; the daemon subscribes read-only and sends no app commands over
   this connection.
@@ -77,17 +77,19 @@ the lights keep breathing even if the host stalls.
   when the feed's layout changes — not on every status revision. A coordinating
   creator takes precedence over the original creator. Descendants stay attached
   to their own session IDs rather than being folded into the parent's DB flags.
-- **DB status and CLI hooks remain the fallback** whenever the feed disconnects
-  or omits an item, or later work disproves a stuck feed question. The feed
-  truncates collections, so missing isn't idle.
-  In the fallback, DB running flags, token movement and hooks track work;
+- **Feed status merges with DB status and CLI hooks.** Questions outrank errors,
+  then interruptions, then working. Feed running, DB running flags, token
+  movement and hooks track work; local working evidence beats feed unread/idle.
+  Feed merge-ready and paused remain below working.
+  The feed truncates collections, so missing isn't idle.
   `agent_asking` / `agent_plan_ready` in the DB activity table track questions.
   Later token movement or a work hook retires a stale question. A
   `permissionRequest` on an auto-approving session isn't a question.
   New feed questions refresh their DB timestamps for oldest-first navigation.
-  While a feed question remains, reconciliation refreshes cached DB status
-  (not structure) to observe token movement and keep a retired question's
-  fallback current. Running alone doesn't retire a question, and no age-out is used.
+  Reconciliation refreshes DB status every tick (not structure) because the
+  feed can lag or omit running transitions. This also observes token movement
+  that retires stale questions. Running alone doesn't retire a question, and no
+  age-out is used.
 
 Live verification on 2026-10-22 matched all 97 workspace and 23 chat feed items
 to `sessions.id` and `ghapp://sessions/<id>`. Workspace item IDs aren't workspace
@@ -783,7 +785,7 @@ where the Copilot app sits on your taskbar, or every key will raise the *wrong*
 app and then type into it. Count left to right, ignoring Start / Search and
 Task View. Set it to `None` to turn focus-stealing off entirely.
 
-**Fallback LED timing, both deliberate.** Without a feed item, a working session holds blue for
+**LED timing, both deliberate.** DB/hook working evidence holds a session blue for
 a few seconds after it stops, because `is_running` drops out between turns (up
 to 5.8s measured) and following it literally made the light cycle while work was
 still going. And a question clears as soon as the agent runs its next tool, not
@@ -854,7 +856,7 @@ cd daemon
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-The suite covers feed-first status and DB/hook fallback, nested rollup and
+The suite covers merged feed and DB/hook status, nested rollup and
 watched-child rules, tap targets, attention-next and children-page paging.
 It also covers the read-only DB reader against a fixture database, hook generation
 (including the safety properties above), pad discovery ordering, and the hook

@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: MIT
-"""Feed-first session status and workstream rollup.
+"""Merged session status and workstream rollup.
 
-The DB supplies structure. A connected companion item owns its own status
-unless later work retires its question; missing items and disconnections also
-use the original DB/hook resolver. Descendants
+The DB supplies structure. Companion status merges with DB and hook evidence,
+including later work that retires a stale feed question. Descendants
 keep their identities throughout resolution, so an answered child question
 cannot get latched onto its parent.
 """
@@ -343,26 +342,14 @@ class StateStore:
 
         overlay = self._overlays.get(session.session_id)
         item = self._feed_items.get(session.session_id)
-        if item is not None:
-            state = self._feed_state(item)
-            if state is not None and (
-                state != NEEDS_APPROVAL or not self._feed_question_stale(session, overlay)
-            ):
-                return state
+        state = self._feed_state(item) if item is not None else None
+        if state == NEEDS_APPROVAL and not self._feed_question_stale(session, overlay):
+            return NEEDS_APPROVAL
 
-        # Approval and error have no database equivalent, so hooks own them
-        # outright. Approval outranks error: it is the one state that blocks
-        # progress until you act.
-        if overlay is not None:
-            if overlay.pending_approval and not session.auto_approve:
-                # Only sessions that actually ask can be blocked on you. When a
-                # session auto-approves, permissionRequest fires on every tool
-                # call and means nothing more than "work is happening" --
-                # rendering that as "needs approval" made the LED blink orange
-                # continuously throughout normal operation.
-                return NEEDS_APPROVAL
-            if overlay.error:
-                return ERROR
+        # Auto-approving sessions emit permissionRequest on every tool call;
+        # only sessions that actually ask can be blocked on that hook.
+        if overlay is not None and overlay.pending_approval and not session.auto_approve:
+            return NEEDS_APPROVAL
 
         # Asking outranks working, and must: a session sitting on a question
         # still reports is_running, so letting working win meant a slot that was
@@ -370,16 +357,22 @@ class StateStore:
         if self._is_asking(session, overlay):
             return NEEDS_APPROVAL
 
+        if state == ERROR or (overlay is not None and overlay.error):
+            return ERROR
+
         # An interrupted session has stopped part-way and will not resume until
         # you nudge it, so it must outrank working too -- a slot frozen
         # mid-task otherwise sits there looking busy indefinitely.
-        if session.was_interrupted:
+        if state == INTERRUPTED or session.was_interrupted:
             return INTERRUPTED
 
-        if self._is_working(session, overlay):
+        if state == WORKING or self._is_working(session, overlay):
             return WORKING
 
-        if session.unread or self._unread_hinted(overlay):
+        if state in (MERGE_READY, PAUSED):
+            return state
+
+        if state == UNREAD or session.unread or self._unread_hinted(overlay):
             return UNREAD
 
         return IDLE

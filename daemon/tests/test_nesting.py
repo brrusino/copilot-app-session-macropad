@@ -62,23 +62,64 @@ def test_priority_and_self_only_states():
     assert store.resolve(root) == "needs_approval"
     for status in ("merge_ready", "paused", "unread"):
         store.apply_feed(snapshot(("s-0", status)))
+        assert store.resolve_self(root) == status
         assert store.resolve(root) == status
 
 
-def test_feed_beats_stale_db_and_hooks_and_falls_back_per_item():
-    root = node(0, asking=True, asking_at=1, is_running=True,
-                children=(node(1),))
+def test_feed_idle_merges_db_and_hooks_per_item():
+    root = node(0, children=(node(1),))
     store = StateStore()
     store.apply_snapshot([root])
     store.apply_hook("errorOccurred", "s-0")
     store.apply_feed(snapshot(("s-0", "idle")))
-    assert store.resolve_self(root) == "idle"
+    assert store.resolve_self(root) == "error"
     store.apply_hook("errorOccurred", "s-1")
     assert store.resolve(root) == "error"  # child is missing from the feed
     store.apply_feed(snapshot(("s-0", "idle"), ("s-1", "idle")))
-    assert store.resolve(root) == "idle"
+    assert store.resolve(root) == "error"
     store.apply_feed(None)
     assert store.resolve(root) == "error"
+
+
+@pytest.mark.parametrize("status", ["unread", "idle", "merge_ready", "paused"])
+@pytest.mark.parametrize("evidence", ["db_running", "hook", "activity"])
+def test_local_work_beats_feed_resting_states_everywhere(status, evidence):
+    child = node(1, is_running=evidence == "db_running")
+    root = node(0, children=(child,))
+    store = StateStore()
+    store.apply_snapshot([root])
+    store.apply_feed(snapshot(("s-0", "idle"), ("s-1", status)))
+    if evidence == "hook":
+        store.apply_hook("postToolUse", "s-1")
+    elif evidence == "activity":
+        child = replace(child, activity=1)
+        root = replace(root, children=(child,))
+        store.apply_snapshot([root])
+    assert store.resolve_self(child) == "working"
+    assert store.resolve(root) == "working"
+    assert store.tap_target(root) == root
+    assert store.attention_sessions() == []
+    assert store.next_attention() is None
+    assert store.rolled_up([root]) == "working"
+
+
+@pytest.mark.parametrize("status,kwargs,hook,expected", [
+    ("error", {"asking": True, "asking_at": 1}, None, "needs_approval"),
+    ("running", {"asking": True, "asking_at": 1}, None, "needs_approval"),
+    ("error", {}, "permissionRequest", "needs_approval"),
+    ("needs_input", {}, "errorOccurred", "needs_approval"),
+    ("interrupted", {}, "errorOccurred", "error"),
+    ("running", {"was_interrupted": True}, None, "interrupted"),
+    ("idle", {"unread": True}, None, "unread"),
+])
+def test_merged_status_priority(status, kwargs, hook, expected):
+    root = replace(node(0, **kwargs), auto_approve=False)
+    store = StateStore()
+    store.apply_snapshot([root])
+    if hook:
+        store.apply_hook(hook, "s-0")
+    store.apply_feed(snapshot(("s-0", status)))
+    assert store.resolve_self(root) == expected
 
 
 def test_unverified_attention_is_not_assumed_to_be_a_question():
@@ -309,19 +350,27 @@ def test_disconnect_immediately_uses_fresh_db_and_hooks(daemon, monkeypatch):
     install_sections(daemon, monkeypatch, sections)
     daemon._on_feed_snapshot(snapshot(("s-0", "idle")))
     daemon._on_hook("errorOccurred", "s-0", {})
-    assert daemon.store.slot_states()[0] == "idle"
+    assert daemon.store.slot_states()[0] == "error"
     daemon._on_feed_disconnect()
     assert daemon.store.slot_states()[0] == "error"
     assert daemon.link.sent[-1]["v"][0] == "error"
 
 
-def test_full_feed_coverage_needs_no_db_poll(daemon, monkeypatch):
-    install_sections(daemon, monkeypatch, [Section("Pinned", (node(0),))])
-    daemon._on_feed_snapshot(snapshot(("s-0", "idle")))
+def test_full_feed_coverage_refreshes_status_each_tick_not_structure(daemon, monkeypatch):
+    root = node(0)
+    install_sections(daemon, monkeypatch, [Section("Pinned", (root,))])
+    daemon._on_feed_snapshot(snapshot(("s-0", "unread")))
+    assert daemon.store.slot_states()[0] == "unread"
     monkeypatch.setattr(daemon.db, "sections", lambda *_a: pytest.fail("structure poll"))
-    monkeypatch.setattr(daemon.db, "refresh_status", lambda *_a: pytest.fail("status poll"))
+    calls = []
+    fresh = replace(root, is_running=True)
+    monkeypatch.setattr(daemon.db, "refresh_status",
+                        lambda secs: calls.append(True) or [Section("Pinned", (fresh,))])
     daemon.reconcile()
+    assert daemon.store.slot_states()[0] == "working"
+    assert daemon.link.sent[-1] == {"t": "states", "v": ["working"] + ["empty"] * 7}
     daemon.reconcile()
+    assert calls == [True, True]
 
 
 def test_feed_question_polls_work_evidence_and_keeps_fallback_current(daemon, monkeypatch):

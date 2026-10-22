@@ -566,7 +566,7 @@ class CopilotDB:
         )
 
     def refresh_status(self, sections: list[Section]) -> list[Section]:
-        """Refresh fallback status without rebuilding pins or parent links."""
+        """Refresh status without rebuilding pins or parent links."""
         nodes = [node for sec in sections for root in sec.sessions
                  for node in (root, *root.descendants())]
         with self._connect() as conn:

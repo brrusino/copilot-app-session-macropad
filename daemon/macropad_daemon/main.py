@@ -6,7 +6,7 @@ Wires the status, structure and hardware paths together:
 * :mod:`.companion_feed` pushes the app's live status.
 * :mod:`.hook_server` receives push events from the Copilot CLI hooks.
 * :mod:`.copilot_db` reconciles against the app's own state, read-only.
-* :mod:`.state` resolves each workstream, with DB/hooks as fallback.
+* :mod:`.state` resolves each workstream by merging feed and DB/hook evidence.
 * :mod:`.serial_link` carries states to the pad and key events back.
 
 Useful without hardware::
@@ -623,19 +623,10 @@ class Daemon:
             if not self._structure_loaded or self._feed_snapshot is None:
                 self._read_structure()
             else:
-                covered = {
-                    sid for sid, item in self.store.feed_items(self._feed_snapshot).items()
-                    if self.store._feed_state(item) is not None
-                }
-                nodes = [node for sec in self._sections for root in sec.sessions
-                         for node in (root, *root.descendants())]
-                # Feed questions can stick after an answer. Refresh status to
-                # observe work retiring them, then keep their fallback current.
-                questions = self.store._feed_question_at
-                if any(node.session_id not in covered or node.session_id in questions
-                       for node in nodes):
-                    self._sections = self.db.refresh_status(self._sections)
-                    self._record_db_snapshot()
+                # The feed can miss running transitions. Keep DB work evidence
+                # fresh even when every session has a recognized feed status.
+                self._sections = self.db.refresh_status(self._sections)
+                self._record_db_snapshot()
         except Exception:
             log.exception("database reconcile failed")
             return
